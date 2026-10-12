@@ -440,6 +440,29 @@ describe("collectory-mcp over MCP against a fake collectory 6.3.0", () => {
     assert.equal(fake.state.contacts.size, 1);
   });
 
+  it("contacts: notify set although collectory ignores it on create; role and flags changed on the existing link; unlinked", async () => {
+    const { call } = await connect(fake, { token: "m2m-token" });
+    const a = await call("collectory_add_contact", { uid: "co1", email: "eva@example.org", role: "Curator", notify: true, dryRun: false, confirm: true });
+    assert.equal(a.json.verified, true, a.text);
+    assert.equal(fake.state.links[0]!.notify, true);
+    const again = await call("collectory_add_contact", { uid: "co1", email: "eva@example.org", dryRun: false, confirm: true });
+    assert.match(again.json.link, /collectory_update_contact/);
+    const p = await call("collectory_update_contact", { uid: "co1", email: "EVA@example.org", role: "Director", primaryContact: true });
+    assert.deepEqual(p.json.changes.map((c: any) => c.field), ["role", "primaryContact"]);
+    assert.equal(fake.state.links[0]!.role, "Curator", "the preview writes nothing");
+    const u = await call("collectory_update_contact", { uid: "co1", email: "eva@example.org", role: "Director", primaryContact: true, dryRun: false, confirm: true });
+    assert.equal(u.json.verified, true, u.text);
+    assert.deepEqual({ ...fake.state.links[0]! }, { uid: "co1", contactId: fake.state.links[0]!.contactId, role: "Director", administrator: false, primaryContact: true, notify: true });
+    const missing = await call("collectory_update_contact", { uid: "co2", email: "eva@example.org", role: "X", dryRun: false, confirm: true });
+    assert.match(missing.text, /not a contact of co2/);
+    const ask = await call("collectory_remove_contact", { uid: "co1", email: "eva@example.org" });
+    assert.match(ask.text, /primary contact and the only contact/);
+    assert.equal(fake.state.links.length, 1);
+    const rm = await call("collectory_remove_contact", { uid: "co1", email: "eva@example.org", confirm: true });
+    assert.equal(rm.json.removed, true, rm.text);
+    assert.equal(fake.state.links.length, 0);
+  });
+
   it("audit finds resources without unique terms, broken hub members and ambiguous or missing code mappings", async () => {
     fake.add("dataHub", { uid: "dh2", name: "Hub 2", memberDataResources: JSON.stringify(["dr77"]) });
     fake.state.providerMaps.set("co1", { institutionCodes: ["MNCN"], collectionCodes: ["ENT"], exact: false, matchAnyCollectionCode: false });

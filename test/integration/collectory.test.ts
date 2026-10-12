@@ -166,13 +166,19 @@ describe("real collectory: writes with JWTs from the test issuer", { skip: (!URL
     assert.deepEqual(h.memberDataResources.map((m: any) => m.uid), [dr], "the data resources posted back by the form are kept");
   });
 
-  it("contacts: created once by email and linked", async () => {
+  it("contacts: created once by email and linked, the link updated, then unlinked", async () => {
     const co = await create("collection", { name: `mcp-it contacts ${stamp}` });
     const email = `mcp-it-${stamp}@example.org`;
-    const r = await m2m("collectory_add_contact", { uid: co, email, firstName: "Ana", role: "Curator", publish: true, dryRun: false, confirm: true });
-    assert.equal(r.json?.saved, true, r.text);
+    const r = await m2m("collectory_add_contact", { uid: co, email, firstName: "Ana", role: "Curator", publish: true, notify: true, dryRun: false, confirm: true });
+    assert.equal(r.json?.verified, true, r.text);
     const l = (await m2m("collectory_contacts", { uid: co })).json;
     assert.ok(l.some((x: any) => x.contact?.email === email), JSON.stringify(l));
+    const u = await m2m("collectory_update_contact", { uid: co, email, role: "Director", administrator: true, primaryContact: true, dryRun: false, confirm: true });
+    assert.equal(u.json?.verified, true, u.text);
+    const rm = await m2m("collectory_remove_contact", { uid: co, email, confirm: true });
+    assert.equal(rm.isError, false, rm.text);
+    // 5.1.x does not flush deletes through the web service (#287): the tool must say so rather than claim it
+    if (rm.json.removed === false) assert.match(rm.json.note, /#287/);
   });
 
   it("delete checks what still refers to the entity", async () => {

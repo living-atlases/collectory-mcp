@@ -454,17 +454,55 @@ export class Workflows {
 
   // ---------------- contacts ----------------
 
-  async addContact(uid: string, c: { email: string; firstName?: string; lastName?: string; title?: string; phone?: string; publish?: boolean; role?: string; administrator?: boolean; primaryContact?: boolean }, apply: boolean) {
+  async addContact(uid: string, c: { email: string; firstName?: string; lastName?: string; title?: string; phone?: string; publish?: boolean; role?: string; administrator?: boolean; primaryContact?: boolean; notify?: boolean }, apply: boolean) {
     const e = entityOf(uid);
     const existing = await this.client.contactByEmail(c.email);
-    const linked = (await this.client.contactsFor(uid).catch(() => [])).find((l) => (l["contact"] as Json | undefined)?.["email"] === c.email);
-    const plan = { uid, entity: e, contact: existing ? { id: existing["id"], action: "reuse existing contact" } : { action: "create contact", email: c.email }, link: linked ? "already linked (collectory's web service cannot change an existing link: edit its role in the admin UI)" : { role: c.role ?? "Contact", administrator: !!c.administrator, primaryContact: !!c.primaryContact } };
+    const linked = (await this.linkOf(uid, c.email)) !== undefined;
+    const link = { role: c.role ?? "Contact", administrator: !!c.administrator, primaryContact: !!c.primaryContact, notify: !!c.notify };
+    const plan = { uid, entity: e, contact: existing ? { id: existing["id"], action: "reuse existing contact" } : { action: "create contact", email: c.email }, link: linked ? "already linked: change it with collectory_update_contact" : link };
     if (!apply || linked) return plan;
     const contact = existing ?? (await this.client.saveContact(undefined, { email: c.email, firstName: c.firstName, lastName: c.lastName, title: c.title, phone: c.phone, publish: c.publish ?? false }));
     const id = Number(contact["id"]);
     if (!id) throw new Error("collectory did not return the contact id");
-    await this.client.linkContact(uid, id, { role: c.role ?? "Contact", administrator: !!c.administrator, primaryContact: !!c.primaryContact });
-    return { ...plan, saved: true, contactId: id };
+    await this.client.linkContact(uid, id, link);
+    // collectory ignores notify when it creates the link; a second POST updates the link and sets it.
+    if (link.notify) await this.client.linkContact(uid, id, link);
+    const now = await this.linkOf(uid, c.email);
+    return { ...plan, saved: true, contactId: id, now: now ?? null, verified: !!now && sameLink(now, link) };
+  }
+
+  /** The link of the contact with this email to an entity, as {role, administrator, primaryContact, notify}. */
+  private async linkOf(uid: string, email: string): Promise<ContactLink | undefined> {
+    const l = (await this.client.contactsFor(uid).catch(() => [])).find((x) => String((x["contact"] as Json | undefined)?.["email"] ?? "").toLowerCase() === email.toLowerCase());
+    return l && { role: String(l["role"] ?? ""), administrator: !!l["editor"], primaryContact: !!l["primaryContact"], notify: !!l["notify"] };
+  }
+
+  /** Change the role or flags of an existing contact link (the web service updates a link it already has). */
+  async updateContact(uid: string, email: string, changes: Partial<ContactLink>, apply: boolean) {
+    const current = await this.linkOf(uid, email);
+    if (!current) throw new Error(`${email} is not a contact of ${uid}: use collectory_add_contact`);
+    const next = { ...current, ...Object.fromEntries(Object.entries(changes).filter(([, v]) => v !== undefined)) } as ContactLink;
+    const diff = (Object.keys(next) as Array<keyof ContactLink>).filter((k) => next[k] !== current[k]).map((k) => ({ field: k, from: current[k], to: next[k] }));
+    const plan = { uid, email, current, changes: diff, ...(diff.length ? {} : { warning: "nothing changes" }) };
+    if (!apply || !diff.length) return plan;
+    const contact = await this.client.contactByEmail(email);
+    const id = Number(contact?.["id"]);
+    if (!id) throw new Error(`no contact id for ${email}`);
+    await this.client.linkContact(uid, id, { ...next });
+    const now = await this.linkOf(uid, email);
+    return { ...plan, saved: true, now: now ?? null, verified: !!now && sameLink(now, next) };
+  }
+
+  async removeContact(uid: string, email: string, apply: boolean) {
+    const current = await this.linkOf(uid, email);
+    if (!current) throw new Error(`${email} is not a contact of ${uid}`);
+    const others = (await this.client.contactsFor(uid)).length - 1;
+    const plan = { uid, email, current, ...(current.primaryContact ? { warning: `${email} is the primary contact${others ? "" : " and the only contact"} of ${uid}` } : {}) };
+    if (!apply) return plan;
+    const contact = await this.client.contactByEmail(email);
+    await this.client.unlinkContact(uid, Number(contact?.["id"]));
+    const gone = (await this.linkOf(uid, email)) === undefined;
+    return { ...plan, removed: gone, ...(gone ? {} : { note: "the link is still there: collectory 5.1.x does not flush deletes through the web service (#287)" }) };
   }
 
   // ---------------- licences ----------------
@@ -670,6 +708,15 @@ export class Workflows {
     }
   }
 }
+
+export interface ContactLink {
+  role: string;
+  administrator: boolean;
+  primaryContact: boolean;
+  notify: boolean;
+}
+
+const sameLink = (a: ContactLink, b: ContactLink) => a.role === b.role && a.administrator === b.administrator && a.primaryContact === b.primaryContact && a.notify === b.notify;
 
 export interface CodeMapping {
   /** The collection (or, for a provider map without a collection, its institution) lookups resolve to. */

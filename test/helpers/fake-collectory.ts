@@ -27,7 +27,7 @@ export interface FakeOptions {
 export interface FakeState {
   entities: Map<string, Json>;
   contacts: Map<number, Json>;
-  links: Array<{ uid: string; contactId: number; role: string; administrator: boolean; primaryContact: boolean }>;
+  links: Array<{ uid: string; contactId: number; role: string; administrator: boolean; primaryContact: boolean; notify?: boolean }>;
   providerMaps: Map<string, { institutionCodes: string[]; collectionCodes: string[]; exact: boolean; matchAnyCollectionCode: boolean; warning?: string }>;
   /** Provider maps without a collection (a database older than initial.sql, whose collection_id is nullable). */
   legacyMaps: Array<{ id: number; institution: string; institutionCodes: string[]; collectionCodes: string[]; matchAnyCollectionCode: boolean }>;
@@ -243,12 +243,23 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
       }
       const cl = path.match(/^\/ws\/(\w+)\/(\w+\d+)\/contacts(?:\/(\d+))?$/);
       if (cl) {
-        if (req.method === "GET" && !cl[3]) return send(res, 200, state.links.filter((l) => l.uid === cl[2]).map((l) => ({ contact: state.contacts.get(l.contactId), role: l.role, primaryContact: l.primaryContact, editor: l.administrator })));
+        if (req.method === "GET" && !cl[3]) return send(res, 200, state.links.filter((l) => l.uid === cl[2]).map((l) => ({ contact: state.contacts.get(l.contactId), role: l.role, primaryContact: l.primaryContact, editor: l.administrator, notify: !!l.notify })));
         if (req.method === "POST" && cl[3]) {
           if (!editorOrScope) return deny();
           const b = JSON.parse(raw);
-          state.links.push({ uid: cl[2]!, contactId: Number(cl[3]), role: b.role, administrator: !!b.administrator, primaryContact: !!b.primaryContact });
+          const link = state.links.find((l) => l.uid === cl[2] && l.contactId === Number(cl[3]));
+          // an existing link is updated (bindData + flush, checked on 5.1.1 and 6.3.0); a new one ignores notify
+          if (link) {
+            Object.assign(link, Object.fromEntries(Object.entries({ role: b.role, administrator: b.administrator, primaryContact: b.primaryContact, notify: b.notify }).filter(([, v]) => v !== undefined)));
+            return send(res, 200, "updated");
+          }
+          state.links.push({ uid: cl[2]!, contactId: Number(cl[3]), role: b.role, administrator: !!b.administrator, primaryContact: !!b.primaryContact, notify: false });
           return send(res, 201, "created");
+        }
+        if (req.method === "DELETE" && cl[3]) {
+          if (!editorOrScope) return deny();
+          state.links = state.links.filter((l) => !(l.uid === cl[2] && l.contactId === Number(cl[3])));
+          return send(res, 200, "deleted");
         }
       }
       const find = path.match(/^\/ws\/find\/(\w+)$/);

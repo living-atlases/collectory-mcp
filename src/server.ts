@@ -201,7 +201,7 @@ export function createServer(deps: ServerDeps): McpServer {
     "collectory_add_contact",
     "write",
     "Link a person to an entity as a contact (reuses the contact with that email or creates it)",
-    { uid: uid(), email: z.string().email(), firstName: z.string().optional(), lastName: z.string().optional(), title: z.string().max(20).optional(), phone: z.string().optional(), publish: z.boolean().optional().describe("Show the contact on public pages"), role: z.string().max(128).optional(), administrator: z.boolean().optional().describe("Can edit the entity"), primaryContact: z.boolean().optional(), dryRun, confirm },
+    { uid: uid(), email: z.string().email(), firstName: z.string().optional(), lastName: z.string().optional(), title: z.string().max(20).optional(), phone: z.string().optional(), publish: z.boolean().optional().describe("Show the contact on public pages"), role: z.string().max(128).optional(), administrator: z.boolean().optional().describe("Can edit the entity"), primaryContact: z.boolean().optional(), notify: z.boolean().optional().describe("Receive notifications about the entity"), dryRun, confirm },
     async (a) => {
       const { uid: u, dryRun: _d, confirm: _c, ...c } = a;
       const preview = mustConfirm(a);
@@ -209,6 +209,25 @@ export function createServer(deps: ServerDeps): McpServer {
       return preview ? { dryRun: true, ...r } : r;
     },
   );
+
+  tool(
+    "collectory_update_contact",
+    "write",
+    "Change the role, editor rights, primary-contact or notify flag of a contact already linked to an entity",
+    { uid: uid(), email: z.string().email(), role: z.string().max(128).optional(), administrator: z.boolean().optional().describe("Can edit the entity"), primaryContact: z.boolean().optional(), notify: z.boolean().optional(), dryRun, confirm },
+    async (a) => {
+      const preview = mustConfirm(a);
+      const r = await wf.updateContact(a.uid, a.email, { role: a.role, administrator: a.administrator, primaryContact: a.primaryContact, notify: a.notify }, !preview);
+      return preview ? { dryRun: true, ...r } : r;
+    },
+  );
+
+  tool("collectory_remove_contact", "destructive", "Unlink a contact from an entity (the contact itself is kept)", { uid: uid(), email: z.string().email(), confirm }, async (a) => {
+    const plan = await wf.removeContact(a.uid, a.email, false);
+    const ask = confirmOnly(a, `unlink ${a.email} from ${a.uid}`);
+    if (ask) return { ...ask, ...plan };
+    return wf.removeContact(a.uid, a.email, true);
+  });
 
   // ---------------- licences ----------------
 

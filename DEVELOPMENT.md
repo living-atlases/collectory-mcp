@@ -53,6 +53,7 @@ MCP client ──stdio or Streamable HTTP──▶ collectory-mcp ──HTTP─�
 | `collectory_set_hub_members` | `POST /ws/dataHub/{uid}` `memberDataResources`; `/dataHub/edit/{uid}?page=/dataHub/members` → `/dataHub/base` `_action_updateDescription` | write, dry run by default |
 | `collectory_set_record_consumers` | `/{dataResource,dataProvider}/editConsumers/{uid}?source=co|in` → `…/base` `_action_updateConsumers` | write, dry run by default |
 | `collectory_set_connection_parameters` | `POST /ws/dataResource/{uid}` `connectionParameters` | write, dry run by default |
+| `collectory_update_contact`, `collectory_remove_contact` | `POST`/`DELETE /ws/{entity}/{uid}/contacts/{id}` | write, dry run by default / destructive, confirm |
 | `collectory_add_contact` | `/ws/contacts/email/{e}`, `POST /ws/contacts`, `POST /ws/{entity}/{uid}/contacts/{id}` | write, dry run by default |
 | `collectory_ipt_preview` | the provider's IPT `rss.do` + `/ws/find/dataResource` | read |
 | `collectory_ipt_scan` | `/ws/ipt/scan/{dp}.json`; with `create`: `/dataProvider/iptScan` (admin page) | write, dry run by default |
@@ -95,9 +96,10 @@ What the MCP guards against, and what could be fixed or added upstream:
 8. **Endpoints that fail with a NullPointerException** because they never resolve the entity (`check()`):
    `GET /ws/dataResource/{uid}/connectionParameters`, `GET /ws/dataHub/{uid}/institutions|collections`, `HEAD
    /ws/{entity}/{uid}`. Dead URL mappings: `/ws/notify`, `/ws/{entity}/contacts/{uid}`.
-9. **Contact links**: `POST /ws/{entity}/{uid}/contacts/{id}` on an existing link binds the link but saves the contact,
-   so changes are lost; `notify` is ignored on create; `GET /ws/{entity}/{uid}/contacts/{id}` ignores the entity.
-   `collectory_add_contact` only creates links.
+9. **Contact links**: `notify` is ignored when `POST /ws/{entity}/{uid}/contacts/{id}` creates a link (a second POST,
+   which updates it, sets it); `GET /ws/{entity}/{uid}/contacts/{id}` ignores the entity. Reading the code suggested
+   that updating an existing link is lost (it binds the link but saves the contact), but the flush persists it: checked
+   on 5.1.1 and 6.3.0, so `collectory_update_contact` uses the web service, and unlinking works on 5.1.1 too.
 10. **`codeMapDump`** hard-codes ALA's `dp20`/`dh1` (OZCAM) in every row, leaves out maps that match any collection code
     and list none (they still take lookups), and fails (NullPointerException) when a provider map without a collection
     has collection codes. The MCP reads the collections' own mappings instead.
@@ -169,7 +171,8 @@ retry, the hub reindex list, the `/ws/find` string parsing, the -1 coordinates o
 near-duplicate, in-use and vocabulary checks, the login on a bounce to the public map (also with an expired session, and a 403 rather than a login error for a person
 without the role), the root of a collectory under a context path, the tolerated landing bounce after a form save, the session on the `/ws/licence`
 form post, the 5.x licence fallback, the code mapping conflicts with matchAny maps, in any case, and with maps without
-a collection (refused when they cannot be read), and the lookup that resolves to an institution makes at least one test fail.
+a collection (refused when they cannot be read), the lookup that resolves to an institution, and the contact link
+notify, email case, and update preview makes at least one test fail.
 
 ### Integration harness
 

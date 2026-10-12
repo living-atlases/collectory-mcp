@@ -26,7 +26,7 @@ It works like its siblings [spatial-mcp](https://github.com/living-atlases/spati
   repatriate and load the ones you choose; register or update entities in the GBIF registry; import GBIF
   organisations as data providers; check the GBIF sharing summary.
 - **Everyday edits**: create institutions, collections, providers and resources, change fields (with a preview of each
-  change), add contacts, check what refers to an entity before deleting it.
+  change), add contacts and change their role or flags, check what refers to an entity before deleting it.
 - **Licences**: add or update the licences resources can choose, refusing near-duplicates (3.0 vs 3.x), and refuse to
   delete one that resources still use.
 - **Find problems**: resources without licence (or with one outside the vocabulary) or unique key terms, broken
