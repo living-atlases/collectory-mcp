@@ -10,10 +10,10 @@ import { ADMIN_LOGIN, startFakeCollectory, USER_LOGIN } from "./helpers/fake-col
 
 type Fake = Awaited<ReturnType<typeof startFakeCollectory>>;
 
-async function connect(fake: Fake, o: { token?: string; login?: boolean | typeof USER_LOGIN; readonly?: boolean; secrets?: string[] } = {}) {
+async function connect(fake: Fake, o: { token?: string; login?: boolean | typeof USER_LOGIN; readonly?: boolean; secrets?: string[]; index?: boolean } = {}) {
   const account = o.login === true ? ADMIN_LOGIN : o.login || undefined;
   const client = new CollectoryClient(fake.base, { auth: o.token ? staticToken(o.token) : noAuth, session: account ? new WebSession(account.username, account.password) : undefined });
-  const server = createServer({ client, config: { readonly: !!o.readonly, gbifApi: `${fake.base}/gbif/v1` }, secrets: o.secrets ?? [ADMIN_LOGIN.password, o.token] });
+  const server = createServer({ client, config: { readonly: !!o.readonly, gbifApi: `${fake.base}/gbif/v1`, biocacheApi: o.index ? `${fake.base}/biocache` : undefined }, secrets: o.secrets ?? [ADMIN_LOGIN.password, o.token] });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await server.connect(a);
   const mcp = new Client({ name: "test", version: "0" });
@@ -57,6 +57,8 @@ describe("collectory-mcp over MCP against a fake collectory 6.3.0", () => {
     fake.state.entities.clear();
     fake.state.providerMaps.clear();
     fake.state.legacyMaps = [];
+    fake.state.index = [];
+    fake.state.gbifOccurrences = [];
     fake.state.ipt.length = 0;
     fake.state.requests.length = 0;
     fake.state.contacts.clear();
@@ -193,6 +195,47 @@ describe("collectory-mcp over MCP against a fake collectory 6.3.0", () => {
     assert.match(a, /in9: provider map 7 has no collection: it makes \/ws\/codeMapDump fail/);
     assert.match(a, /\/ws\/codeMapDump fails/);
     assert.match(a, /OLD\/X is also mapped to in9|OLD\/X is also mapped to co1/);
+  });
+
+  it("mapping check from the index: per code pair, mapped, missing a mapping, needing a reprocess, or without collectionCode", async () => {
+    fake.state.providerMaps.set("co1", { institutionCodes: ["MA"], collectionCodes: ["MA"], exact: false, matchAnyCollectionCode: false });
+    fake.add("dataResource", { uid: "dr5", name: "Herbarium records", consumers: ["co2"] });
+    fake.state.index.push(
+      { dataResourceUid: "dr5", institutionCode: "MNCN", collectionCode: "ENT", collectionUid: "co2", count: 70 },
+      { dataResourceUid: "dr5", institutionCode: "MA", collectionCode: "MA", count: 20 },
+      { dataResourceUid: "dr5", institutionCode: "MA", collectionCode: "LIQ", count: 7 },
+      { dataResourceUid: "dr5", institutionCode: "MA", count: 3 },
+      { dataResourceUid: "dr9", institutionCode: "X", collectionCode: "Y", count: 1000 },
+    );
+    const { call } = await connect(fake, { index: true, token: "m2m-token" });
+    const r = (await call("collectory_mapping_check", { uids: ["dr5"] })).json.resources[0];
+    assert.equal(r.codesFrom, "index");
+    const v = Object.fromEntries(r.pairs.map((p: any) => [`${p.institutionCode}/${p.collectionCode}`, p.verdict]));
+    assert.deepEqual(v, { "MNCN/ENT": "ok", "MA/MA": "reindex", "MA/LIQ": "unmapped", "MA/null": "no-collection-code" });
+    assert.match(r.problems.join("\n"), /1 code pairs resolve to no collection.*MA\/LIQ/);
+    assert.match(r.suggestions.join("\n"), /defaultDarwinCoreValues/);
+    assert.match(r.suggestions.join("\n"), /reprocess and reindex dr5/);
+    assert.match(r.warnings.join("\n"), /co1 receive records but are not record consumers/);
+    const m = await call("collectory_set_code_mapping", { collectionUid: "co1", collectionCodes: { add: ["LIQ"] }, dryRun: false, confirm: true });
+    assert.equal(m.json?.verified, true, m.text);
+    const mapped = (await call("collectory_mapping_check", { uids: ["dr5"] })).json.resources[0];
+    assert.equal(mapped.pairs.find((p: any) => p.collectionCode === "LIQ").verdict, "reindex", "a mapping made since the last check is seen");
+    fake.state.entities.get("dr5")!["defaultDarwinCoreValues"] = JSON.stringify({ collectionCode: "MA" });
+    const again = (await call("collectory_mapping_check", { uids: ["dr5"] })).json.resources[0];
+    assert.ok(!again.suggestions.join().includes("defaultDarwinCoreValues"), "no suggestion when a default is set");
+    const gaps = (await call("collectory_mapping_check", {})).json.resources;
+    assert.deepEqual(gaps.map((g: any) => [g.uid, g.recordsWithCodesButNoCollection]), [["dr9", 1000], ["dr5", 27]]);
+  });
+
+  it("mapping check without an index reads the codes of the GBIF dataset", async () => {
+    fake.add("dataResource", { uid: "dr6", name: "Repatriated", guid: "11111111-2222-3333-4444-555555555555", consumers: ["co2"] });
+    fake.state.gbifOccurrences.push({ datasetKey: "11111111-2222-3333-4444-555555555555", institutionCode: "MNCN", collectionCode: "ENT", count: 5 }, { datasetKey: "11111111-2222-3333-4444-555555555555", institutionCode: "MNCN", count: 2 });
+    const { call } = await connect(fake);
+    const r = (await call("collectory_mapping_check", { uids: ["dr6"] })).json.resources[0];
+    assert.equal(r.codesFrom, "gbif");
+    assert.deepEqual(r.pairs.map((p: any) => [p.institutionCode, p.collectionCode, p.records, p.verdict]), [["MNCN", "ENT", 5, "ok"], ["MNCN", null, 2, "no-collection-code"]]);
+    const none = await call("collectory_mapping_check", {});
+    assert.match(none.text, /COLLECTORY_BIOCACHE_URL/);
   });
 
   it("hub members: data resources through the web service, as a JSON string, with the resources to reindex", async () => {
@@ -473,6 +516,8 @@ describe("collectory-mcp over MCP against a fake collectory 6.3.0", () => {
     assert.ok(problems.some((p: string) => p.includes("dh2: member dr77 does not exist")));
     assert.ok(problems.some((p: string) => p.includes("MNCN/ENT is also mapped")));
     assert.ok(problems.some((p: string) => p.startsWith("dr2: no licence")));
+    assert.ok(problems.includes("co2: mapped collection without an institution: its records get no institutionUid"), problems.join("\n"));
+    assert.ok(!problems.some((p: string) => p.startsWith("co1: mapped collection without")), "co1 belongs to in1");
   });
 
   it("never shows configured secrets to the model", async () => {

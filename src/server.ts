@@ -4,6 +4,7 @@ import { nonInteractive } from "./auth.ts";
 import { CollectoryClient, CollectoryError, ENTITIES, entityOf } from "./collectory-client.ts";
 import type { Config } from "./config.ts";
 import { Redactor } from "./redact.ts";
+import { MappingCheck } from "./mapping-check.ts";
 import { Workflows } from "./workflows.ts";
 
 export const VERSION = "0.1.0";
@@ -37,7 +38,7 @@ type ToolResult = { isError?: boolean; content: Array<{ type: "text"; text: stri
 
 export interface ServerDeps {
   client: CollectoryClient;
-  config: Pick<Config, "readonly" | "gbifApi">;
+  config: Pick<Config, "readonly" | "gbifApi" | "biocacheApi">;
   secrets?: Array<string | undefined>;
 }
 
@@ -121,6 +122,23 @@ export function createServer(deps: ServerDeps): McpServer {
     const out = f ? maps.filter((m) => [m.uid, ...m.institutionCodes, ...m.collectionCodes].some((x) => x.toLowerCase() === f)) : maps;
     return { count: out.length, mappings: out, ...(unchecked ? { unchecked } : {}), ...(note ? { note } : {}) };
   });
+
+  tool(
+    "collectory_mapping_check",
+    "read",
+    "Check data resources against the Data mappings wiki page: the institutionCode/collectionCode pairs in their records (from the index with COLLECTORY_BIOCACHE_URL, else GBIF), whether each resolves to a collection, needs a mapping or only a reprocess, records without collectionCode, and record consumers. Without uids (and with the index) lists the resources with unresolved codes",
+    { uids: z.array(uid("dr")).max(50).optional(), dataProvider: uid("dp").optional().describe("Check every data resource of this provider (at most 50)"), limit: z.number().int().positive().max(200).optional() },
+    async (a) => {
+      let uids = a.uids ?? [];
+      if (a.dataProvider) uids = [...uids, ...((await client.get<Record<string, unknown>>(a.dataProvider, "dataProvider"))["dataResources"] as Array<{ uid: string }> ?? []).map((d) => d.uid)].slice(0, 50);
+      // a new checker per call: its lookups are cached only for this call (mappings change between calls)
+      const mappings = new MappingCheck(client, config.gbifApi, config.biocacheApi);
+      if (!uids.length) return mappings.gaps(a.limit);
+      const out = [];
+      for (const u of [...new Set(uids)]) out.push(await mappings.check(u).catch((e: Error) => ({ uid: u, error: e.message })));
+      return { resources: out };
+    },
+  );
 
   tool("collectory_contacts", "read", "Contacts linked to an entity, with their role and flags", { uid: uid() }, async (a) => client.contactsFor(a.uid));
 

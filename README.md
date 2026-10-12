@@ -15,6 +15,10 @@ It works like its siblings [spatial-mcp](https://github.com/living-atlases/spati
 - **Map institution and collection codes to collections** (the wiki's *Data mappings* procedure): add or remove codes
   without losing the existing ones, with a check against every other mapping (duplicates break lookups) and a lookup
   afterwards to prove records will resolve.
+- **Check the data mappings of a resource**, following the wiki page step by step: which institutionCode/collectionCode
+  pairs its records carry, whether each resolves to a collection, is missing a mapping or only needs a reprocess,
+  records without collectionCode (and the default value that fixes it), and its record consumers. With the portal's
+  index it also lists the resources whose records have codes that resolved to no collection.
 - **Maintain data hubs**: add or remove data resources, collections and institutions, and get the list of data
   resources to reprocess and reindex so the hub shows them.
 - **Edit connection parameters safely**: change the protocol, URL, unique key terms or the incremental flag without
@@ -92,6 +96,7 @@ COLLECTORY_URL=https://collections.example.org COLLECTORY_USERNAME=you@example.o
 | `COLLECTORY_OIDC_ISSUER` or `_TOKEN_URL`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_SCOPE` | client credentials grant (token cached and renewed); `_USERNAME`/`_PASSWORD` for the password grant |
 | `COLLECTORY_API_KEY` | legacy API key (5.1.x) |
 | `COLLECTORY_USERNAME` | person for the admin pages (password from `set-password`) |
+| `COLLECTORY_BIOCACHE_URL` | biocache-service of the portal (e.g. `https://biocache-ws.ala.org.au/ws`), to read the codes in the indexed records (as of their last processing) for the mapping check; without it the codes come from GBIF for datasets registered there |
 | `COLLECTORY_GBIF_API` | GBIF API used for previews (default `https://api.gbif.org/v1`) |
 
 ## Things to ask
@@ -104,6 +109,7 @@ COLLECTORY_URL=https://collections.example.org COLLECTORY_USERNAME=you@example.o
 - "Which of dp5's resources are out of date with GBIF? Reload them and tell me when it finishes."
 - "List the GBIF datasets about Spain we could repatriate, with more than 10 000 records."
 - "Register dr22 in GBIF."
+- "Check the data mappings of dp3's resources and fix what is missing."
 
 ## Is it safe?
 

@@ -633,6 +633,9 @@ export class Workflows {
     }
     const mapped = new Set(maps.map((m) => m.uid));
     const collections = await this.client.list("collection");
+    // pipelines takes institutionUid from the lookup match only, which is the collection's institution
+    const colls = await this.entities("collection", [...mapped].filter((u) => entityOf(u) === "collection"));
+    for (const c of colls) if (!c["institution"] && !c["unread"]) findings.push({ uid: String(c["uid"]), name: c["name"], problem: "mapped collection without an institution: its records get no institutionUid" });
     const unmapped = collections.filter((c) => !mapped.has(c.uid)).map((c) => c.uid);
     return {
       checked: { dataResources: drs.length, dataHubs: true, codeMappings: maps.length, collections: collections.length },

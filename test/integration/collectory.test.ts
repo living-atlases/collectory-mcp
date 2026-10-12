@@ -250,6 +250,28 @@ describe("real collectory: writes with JWTs from the test issuer", { skip: (!URL
     assert.deepEqual(created.connectionParameters.termsForUniqueKey, ["occurrenceID"]);
   });
 
+  it("mapping check (Data mappings wiki): codes of the GBIF dataset, mapped through the MCP, then consumers", async () => {
+    const dr = await create("dataResource", { name: `mcp-it mapping check ${stamp}`, resourceType: "records", guid: "a8adde1c-1d66-4ad0-846f-cdf59fc4cb0f" });
+    const first = (await m2m("collectory_mapping_check", { uids: [dr] })).json.resources[0];
+    assert.equal(first.codesFrom, "gbif", JSON.stringify(first));
+    const pair = first.pairs.find((p: any) => p.institutionCode && p.collectionCode);
+    assert.ok(pair, JSON.stringify(first.pairs));
+    // another run of the suite against the same collectory may have mapped it already
+    if (pair.verdict === "unmapped") {
+      const co = await create("collection", { name: `mcp-it mapping check ${stamp}` });
+      const s = await m2m("collectory_set_code_mapping", { collectionUid: co, institutionCodes: { add: [pair.institutionCode] }, collectionCodes: { add: [pair.collectionCode] }, dryRun: false, confirm: true });
+      assert.equal(s.json?.verified, true, s.text);
+    }
+    const second = (await m2m("collectory_mapping_check", { uids: [dr] })).json.resources[0];
+    const now = second.pairs.find((p: any) => p.institutionCode === pair.institutionCode && p.collectionCode === pair.collectionCode);
+    assert.equal(now.verdict, "ok", JSON.stringify(now));
+    assert.match(second.warnings.join("\n"), new RegExp(`${now.resolvesTo} receive records but are not record consumers`));
+    const c = await admin("collectory_set_record_consumers", { uid: dr, source: "co", add: [now.resolvesTo], dryRun: false, confirm: true });
+    assert.equal(c.json?.verified, true, c.text);
+    const third = (await m2m("collectory_mapping_check", { uids: [dr] })).json.resources[0];
+    assert.ok(!third.warnings.join().includes(`${now.resolvesTo} receive records`), JSON.stringify(third.warnings));
+  });
+
   it("GBIF: preview compares with the real GBIF API; repatriation search and organisations read GBIF through collectory", async () => {
     const dp = await create("dataProvider", { name: `mcp-it GBIF ${stamp}` });
     await create("dataResource", { name: `mcp-it Flora d'Andorra ${stamp}`, resourceType: "records", dataProvider: { uid: dp }, guid: "a8adde1c-1d66-4ad0-846f-cdf59fc4cb0f" });

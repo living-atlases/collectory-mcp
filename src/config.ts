@@ -42,6 +42,8 @@ export interface Config {
   login?: { username: string; password?: string };
   tokenStore: "auto" | "keyring" | "file";
   gbifApi: string;
+  /** biocache-service of the portal's index (pipelines), for the codes in the data. */
+  biocacheApi?: string;
   timeoutMs: number;
 }
 
@@ -74,6 +76,7 @@ export function loadConfig(argv: string[] = process.argv.slice(2), env: NodeJS.P
     login: username ? { username, password: env["COLLECTORY_PASSWORD"] || undefined } : undefined,
     tokenStore: oneOf(env, "COLLECTORY_TOKEN_STORE", ["auto", "keyring", "file"] as const, "auto"),
     gbifApi: (env["COLLECTORY_GBIF_API"] ?? "https://api.gbif.org/v1").replace(/\/+$/, ""),
+    biocacheApi: env["COLLECTORY_BIOCACHE_URL"]?.replace(/\/+$/, "") || undefined,
     timeoutMs: Number(env["COLLECTORY_TIMEOUT_MS"] ?? 120_000),
   };
 }

@@ -45,6 +45,7 @@ MCP client ──stdio or Streamable HTTP──▶ collectory-mcp ──HTTP─�
 | `collectory_health` | `/openapi/openapi.json`, `/ws/dataHub`, `/ws/contacts/0` (credential probe), `/manage/list` | read |
 | `collectory_list`, `collectory_get`, `collectory_count` | `/ws/{entity}`, `/ws/{entity}/{uid}`, `POST /ws/find/{entity}`, `/ws/{entity}/count` | read |
 | `collectory_lookup_codes`, `collectory_code_map` | `/ws/lookup/inst/{i}/coll/{c}`; every collection's `recordsProviderMapping` (`POST /ws/find/collection`) plus, with a login, `/providerMap/list` and `show` for maps without a collection | read |
+| `collectory_mapping_check` | the resource, `/ws/lookup`; codes from biocache-service `/occurrences/search` facets (`COLLECTORY_BIOCACHE_URL`) or GBIF `occurrence/search` facets by dataset | read |
 | `collectory_contacts`, `collectory_licences` | `/ws/{entity}/{uid}/contacts`, `/ws/licence` | read |
 | `collectory_audit` | the above, over the whole registry | read |
 | `collectory_save_entity` | `POST /ws/{entity}[/{uid}]` | write, dry run by default |
@@ -145,6 +146,20 @@ Found while running against a real 6.3.0 (the integration harness):
     refused (unless `allowConflicts`) when `codeMapDump` fails and they cannot be read.
 24. **Codes are compared case-insensitively** by the lookup (MySQL collation), so `mncn` and `MNCN` conflict.
 
+How pipelines uses the mappings (gbif/pipelines `livingatlas`, which `collectory_mapping_check` follows instead of the
+wiki's biocache-store steps):
+
+25. `ALAAttributionInterpreter.interpretCodes` looks up **every record that has a collectionCode** in
+    `/ws/lookup/inst/{i}/coll/{c}` and takes `collectionUid` and `institutionUid` from the match only. Record consumers
+    are not consulted (biocache-store required them, `hasMappedCollections`); collectory uses them to list a resource
+    on collection and institution pages. A record without collectionCode gets no collection and no institution;
+    `ALADefaultValuesTransform` runs first and fills the resource's `defaultDarwinCoreValues` where a record lacks the
+    term (`putIfAbsent`), so the wiki's default collectionCode works. A mapped collection without an institution gives
+    its records no `institutionUid` (the lookup answers `institutionUid: null`); the audit flags them. The index
+    (biocache-service over pipelines) has `institutionCode`, `collectionCode`, `collectionUid`, `institutionUid` and
+    `dataResourceUid`; the check uses one `collectionCode` facet per institution code, so it reports the pairs that occur,
+    not a cross product.
+
 What would make this safe by design: a JSON API for provider maps, licences, consumers and hub members accepting the
 same scope as the other writes; server-side validation of connection parameters; a dry-run mode for the IPT scan;
 POST (with CSRF protection) for the GBIF actions; the GBIF password out of the review page.
@@ -172,7 +187,8 @@ near-duplicate, in-use and vocabulary checks, the login on a bounce to the publi
 without the role), the root of a collectory under a context path, the tolerated landing bounce after a form save, the session on the `/ws/licence`
 form post, the 5.x licence fallback, the code mapping conflicts with matchAny maps, in any case, and with maps without
 a collection (refused when they cannot be read), the lookup that resolves to an institution, and the contact link
-notify, email case, and update preview makes at least one test fail.
+notify, email case, and update preview, and the mapping check verdicts (reprocess vs missing mapping, real pairs, the
+default collectionCode suggestion, consumers, a lookup cache per call) makes at least one test fail.
 
 ### Integration harness
 

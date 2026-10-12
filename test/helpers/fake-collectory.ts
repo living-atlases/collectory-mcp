@@ -30,6 +30,10 @@ export interface FakeState {
   links: Array<{ uid: string; contactId: number; role: string; administrator: boolean; primaryContact: boolean; notify?: boolean }>;
   providerMaps: Map<string, { institutionCodes: string[]; collectionCodes: string[]; exact: boolean; matchAnyCollectionCode: boolean; warning?: string }>;
   /** Provider maps without a collection (a database older than initial.sql, whose collection_id is nullable). */
+  /** Records in the portal's index (biocache-service over pipelines), grouped: one row per combination with a count. */
+  index: Array<{ dataResourceUid: string; institutionCode?: string; collectionCode?: string; collectionUid?: string; count: number }>;
+  /** Occurrences in GBIF by dataset and codes. */
+  gbifOccurrences: Array<{ datasetKey: string; institutionCode?: string; collectionCode?: string; count: number }>;
   legacyMaps: Array<{ id: number; institution: string; institutionCodes: string[]; collectionCodes: string[]; matchAnyCollectionCode: boolean }>;
   ipt: Array<{ title: string; link: string; description: string; pubDate: string; dwca: string; guid: string }>;
   gbif: Map<string, { pubDate: string }>;
@@ -63,7 +67,7 @@ const WRITABLE: Record<string, string[]> = {
 };
 
 export async function startFakeCollectory(opts: FakeOptions = {}) {
-  const state: FakeState = { entities: new Map(), contacts: new Map(), links: [], providerMaps: new Map(), legacyMaps: [], ipt: [], gbif: new Map(), loads: new Map(), licences: new Map([[1, { name: "Creative Commons Attribution", acronym: "CC-BY", licenceVersion: "4.0", url: "https://creativecommons.org/licenses/by/4.0/", version: 0 }]]), requests: [], counters: { in: 0, co: 0, dp: 0, dr: 0, dh: 0, contact: 0 } };
+  const state: FakeState = { entities: new Map(), contacts: new Map(), links: [], providerMaps: new Map(), legacyMaps: [], index: [], gbifOccurrences: [], ipt: [], gbif: new Map(), loads: new Map(), licences: new Map([[1, { name: "Creative Commons Attribution", acronym: "CC-BY", licenceVersion: "4.0", url: "https://creativecommons.org/licenses/by/4.0/", version: 0 }]]), requests: [], counters: { in: 0, co: 0, dp: 0, dr: 0, dh: 0, contact: 0 } };
   const sessions = new Map<string, string[]>();
   const deleting = new Set<string>();
   let base = "";
@@ -167,6 +171,37 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
     if (path === "/ipt/rss.do") {
       const items = state.ipt.map((i) => `<item><title>${i.title}</title><link>${i.link}</link><description>${i.description}</description><pubDate>${i.pubDate}</pubDate><guid>${i.guid}</guid><ipt:dwca>${i.dwca}</ipt:dwca><ipt:eml>${i.link.replace("resource", "eml.do")}</ipt:eml></item>`).join("");
       return send(res, 200, `<?xml version="1.0"?><rss xmlns:ipt="http://ipt.gbif.org/"><channel><title>IPT</title>${items}</channel></rss>`, { "Content-Type": "application/rss+xml" });
+    }
+    // biocache-service /occurrences/search: q and fq as field:"value", field:* and -field:*, joined by AND
+    if (path === "/biocache/occurrences/search") {
+      const conds = [...url.searchParams.getAll("q").flatMap((q) => q.split(" AND ")), ...url.searchParams.getAll("fq")].filter((c) => c !== "*:*");
+      const test = (rec: Record<string, unknown>, c: string) => {
+        const neg = c.startsWith("-");
+        const [field, value] = [c.replace(/^-/, "").split(":")[0]!, c.replace(/^-?[^:]+:/, "")];
+        const v = rec[field] as string | undefined;
+        const ok = value === "*" ? v !== undefined : v === JSON.parse(value);
+        return neg ? !ok : ok;
+      };
+      const recs = state.index.filter((rec) => conds.every((c) => test(rec, c)));
+      const field = url.searchParams.get("facets") ?? "";
+      const groups = new Map<string | undefined, number>();
+      for (const rec of recs) { const k = (rec as unknown as Record<string, string | undefined>)[field]; groups.set(k, (groups.get(k) ?? 0) + rec.count); }
+      const fieldResult = [...groups].sort((a, b) => b[1] - a[1]).slice(0, Number(url.searchParams.get("flimit") ?? 30)).map(([v, n]) => (v === undefined ? { label: "Not supplied", count: n, fq: `-${field}:*` } : { label: field === "dataResourceUid" ? String(state.entities.get(v)?.["name"] ?? v) : v, count: n, fq: `${field}:"${v}"` }));
+      return send(res, 200, { totalRecords: recs.reduce((n, x) => n + x.count, 0), occurrences: [], facetResults: field ? [{ fieldName: field, fieldResult }] : [] });
+    }
+    if (path === "/gbif/v1/occurrence/search") {
+      const ds = url.searchParams.get("datasetKey");
+      const inst = url.searchParams.get("institutionCode");
+      const recs = state.gbifOccurrences.filter((o) => o.datasetKey === ds && (inst === null || o.institutionCode === inst));
+      const facets = url.searchParams.getAll("facet").map((f) => {
+        const groups = new Map<string, number>();
+        for (const o of recs) {
+          const v = (o as Record<string, unknown>)[f] as string | undefined;
+          if (v !== undefined) groups.set(v, (groups.get(v) ?? 0) + o.count);
+        }
+        return { field: f.replace(/([A-Z])/g, "_$1").toUpperCase(), counts: [...groups].map(([name, count]) => ({ name, count })) };
+      });
+      return send(res, 200, { count: recs.reduce((n, o) => n + o.count, 0), results: [], facets });
     }
     const gb = path.match(/^\/gbif\/v1\/dataset\/([\w-]+)$/);
     if (gb) return state.gbif.has(gb[1]!) ? send(res, 200, { key: gb[1], ...state.gbif.get(gb[1]!) }) : send(res, 404, { error: "not found" });
