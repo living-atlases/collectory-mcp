@@ -1,0 +1,39 @@
+# Disposable collectory + MySQL + fake OIDC provider for test/integration (see DEVELOPMENT.md).
+# collectory and the issuer use the host network (bound to 127.0.0.1 only: the issuer mints admin tokens) so that the
+# OIDC URLs (http://localhost:4000) are the same for
+# collectory and for the test's browser-like login. COLLECTORY_WAR: path of the WAR (harness/fetch-war.sh).
+services:
+  mysql:
+    image: mysql:8.0-debian
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: collectory
+      MYSQL_USER: collectory
+      MYSQL_PASSWORD: collectory
+    ports:
+      - "127.0.0.1:3307:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 5s
+      retries: 30
+  issuer:
+    image: node:22-alpine
+    network_mode: host
+    command: ["node", "/issuer.mjs"]
+    environment:
+      ISSUER: http://localhost:4000
+    volumes:
+      - ./issuer.mjs:/issuer.mjs:ro
+  collectory:
+    image: ${COLLECTORY_JRE:-eclipse-temurin:17-jre}
+    network_mode: host
+    depends_on:
+      mysql:
+        condition: service_healthy
+      issuer:
+        condition: service_started
+    command: ["java", "-Xmx1g", "-Dgrails.env=production", "-Dserver.address=127.0.0.1", "-Dspring.config.additional-location=/data/collectory/config/", "-jar", "/opt/collectory.war"]
+    volumes:
+      - ${COLLECTORY_WAR:?set COLLECTORY_WAR to the collectory WAR}:/opt/collectory.war:ro
+      - ./collectory-config.properties:/data/collectory/config/collectory-config.properties:ro

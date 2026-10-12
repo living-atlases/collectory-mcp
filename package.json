@@ -1,0 +1,35 @@
+{
+  "name": "collectory-mcp",
+  "version": "0.1.0",
+  "description": "POC: MCP server for routine ALA collectory administration (entities, code mappings, data hubs, connection parameters, IPT and GBIF syncs)",
+  "type": "module",
+  "license": "MPL-2.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "collectory-mcp": "dist/stdio.js",
+    "collectory-mcp-http": "dist/http.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "test:integration": "node --import tsx --test --test-concurrency=1 test/integration/*.test.ts",
+    "start": "node --import tsx src/stdio.ts",
+    "start:http": "node --import tsx src/http.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "cheerio": "^1.2.0",
+    "tsx": "^4.23.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  },
+  "optionalDependencies": {
+    "@napi-rs/keyring": "^2.1.0"
+  }
+}

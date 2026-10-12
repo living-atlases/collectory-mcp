@@ -1,0 +1,6 @@
+{
+  "ignore": ["**/*.md", "docs/**", "harness/**", ".github/**"],
+  "rules": [
+    { "match": ["src/**", "test/**", "package.json", "tsconfig*.json"], "run": "npm run typecheck && npm test", "why": "unit, fake-collectory e2e and stdio smoke tests cover every source file" }
+  ]
+}

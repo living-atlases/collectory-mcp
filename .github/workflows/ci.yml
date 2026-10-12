@@ -1,0 +1,71 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 4 * * *" # nightly: catch changes of collectory releases and of the public demo
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --audit-level=high
+
+  integration:
+    # A disposable collectory (official WAR) + MySQL + a fake OIDC issuer whose JWTs collectory accepts:
+    # every write, the admin forms and the auth split are exercised against the real thing.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        collectory: ["6.3.0", "5.1.1"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/collectory-mcp
+          key: collectory-war-${{ matrix.collectory }}
+      - run: harness/up.sh ${{ matrix.collectory }}
+      - run: npm run test:integration
+        env:
+          COLLECTORY_TEST_URL: http://localhost:8080
+          COLLECTORY_TEST_MINT: http://localhost:4000/mint
+      - if: failure()
+        run: docker compose -p collectory-mcp-it -f harness/docker-compose.yml logs --tail 300 collectory
+        env:
+          COLLECTORY_WAR: /dev/null
+
+  public-demo:
+    # Anonymous checks against the LA demo stack; skipped while it is down.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - id: demo
+        run: |
+          if curl -fsS -m 30 https://collections.l-a.site/ws/dataHub >/dev/null; then echo "up=true" >> "$GITHUB_OUTPUT"; else echo "up=false" >> "$GITHUB_OUTPUT"; echo "::notice::collections.l-a.site is not available: skipped"; fi
+      - if: steps.demo.outputs.up == 'true'
+        run: npm run test:integration
+        env:
+          COLLECTORY_TEST_URL: https://collections.l-a.site
