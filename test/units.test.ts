@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { entityOf, parseCsv } from "../src/collectory-client.ts";
+import { entityOf, isPublicMap, parseCsv } from "../src/collectory-client.ts";
 import { loadConfig, secretsOf } from "../src/config.ts";
 import { checkConnectionParameters, planEntityWrite, same } from "../src/entities.ts";
 import { FormContractError, fill, findForm, pageMessages } from "../src/forms.ts";
@@ -141,5 +141,18 @@ describe("config and secrets", () => {
     const r = new Redactor(["pw1234"]);
     assert.equal(r.str("login pw1234 Bearer abc.def https://u:p@h/x"), "login *** Bearer *** https://***@h/x");
     assert.deepEqual(r.value({ password: "x", list: [{ name: "password", value: "gbif" }], ok: "fine" }), { password: "***", list: [{ name: "password", value: "***" }], ok: "fine" });
+  });
+});
+
+describe("public map detection", () => {
+  it("recognises collectory's root and /public/map, also under a context path", () => {
+    assert.equal(isPublicMap("http://localhost:8080", "/"), true);
+    assert.equal(isPublicMap("http://localhost:8080", "/public/map"), true);
+    assert.equal(isPublicMap("http://localhost:8080", "/licence/list"), false);
+    assert.equal(isPublicMap("https://example.org/collectory", "/collectory/"), true);
+    assert.equal(isPublicMap("https://example.org/collectory/", "/collectory"), true);
+    assert.equal(isPublicMap("https://example.org/collectory", "/collectory/public/map"), true);
+    assert.equal(isPublicMap("https://example.org/collectory", "/collectory/licence/list"), false);
+    assert.equal(isPublicMap("https://example.org/collectory", "/"), false);
   });
 });

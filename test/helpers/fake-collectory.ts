@@ -20,6 +20,8 @@ export interface FakeOptions {
   brokenDrGet?: boolean;
   /** /ws/licence with only name and url, as 5.x answers. */
   legacyLicenceWs?: boolean;
+  /** Show pages that fail to render, which 6.x's error page turns into a redirect to "/" (as a missing gbifLicenceMappingUrl file does). */
+  brokenShowPages?: boolean;
 }
 
 export interface FakeState {
@@ -301,6 +303,7 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
     if (path === "/manage/list") return send(res, 200, page("Manage", "<h1>Your entities</h1>"));
 
     const show = path.match(/^\/(\w+)\/show\/(\w+\d+)$/);
+    if (show && opts.brokenShowPages) return redirect(res, "/");
     if (show) {
       const flash = flashes.get(show[2]!);
       flashes.delete(show[2]!);
@@ -411,5 +414,5 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
 
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  return { base, state, add, close: () => new Promise<void>((r) => server.close(() => r())) };
+  return { base, state, add, dropSessions: () => sessions.clear(), close: () => new Promise<void>((r) => server.close(() => r())) };
 }

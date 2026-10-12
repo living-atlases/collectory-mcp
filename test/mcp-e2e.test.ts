@@ -197,6 +197,8 @@ describe("collectory-mcp over MCP against a fake collectory 6.3.0", () => {
     assert.equal(r.isError, true);
     assert.match(r.text, /403.*public map/s);
     assert.equal(fake.state.entities.get("dh1")!["memberInstitutions"], undefined);
+    const again = await call("collectory_set_hub_members", { hubUid: "dh1", institutions: { add: ["in1"] }, dryRun: false, confirm: true });
+    assert.match(again.text, /403.*public map/s, "with a valid session the bounce is still a 403, not a login error");
   });
 
   it("record consumers via the admin form, with verification", async () => {
@@ -325,6 +327,27 @@ describe("collectory-mcp over MCP against a fake collectory 6.3.0", () => {
     assert.deepEqual(u.json.changes, [{ field: "name", from: "Creative Commons Attribution", to: "Creative Commons Attribution 4.0 International" }]);
     assert.equal(fake.state.licences.get(1)!.name, "Creative Commons Attribution 4.0 International");
     assert.equal(fake.state.licences.size, 2);
+  });
+
+  it("an expired session is renewed when an admin page bounces to the public map", async () => {
+    const { call } = await connect(fake, { login: true });
+    const c = await call("collectory_save_licence", { acronym: "CC0", licenceVersion: "1.0", name: "Public domain", url: "https://creativecommons.org/publicdomain/zero/1.0/", dryRun: false, confirm: true });
+    assert.equal(c.json?.verified, true, c.text);
+    fake.dropSessions();
+    const u = await call("collectory_save_licence", { acronym: "CC0", licenceVersion: "1.0", name: "CC0 1.0", url: "https://creativecommons.org/publicdomain/zero/1.0/", dryRun: false, confirm: true });
+    assert.equal(u.json?.verified, true, u.text);
+  });
+
+  it("a form save is reported even when the page collectory lands on fails (6.x bounces it to the public map)", async () => {
+    const broken = await startFakeCollectory({ brokenShowPages: true });
+    try {
+      seed(broken);
+      const { call } = await connect(broken, { token: "m2m-token", login: true });
+      const r = await call("collectory_set_record_consumers", { uid: "dr1", source: "co", add: ["co1"], dryRun: false, confirm: true });
+      assert.equal(r.json?.verified, true, r.text);
+    } finally {
+      await broken.close();
+    }
   });
 
   it("licences on 5.x, whose web service has no acronym or version: matched and verified through the admin list", async () => {

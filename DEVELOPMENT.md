@@ -124,7 +124,8 @@ Found while running against a real 6.3.0 (the integration harness):
     an authenticated contacts query; `collectory_health` mentions it on a 500.
 20. **Pages guarded only by `@PermissionRequired` (licences, data resources…) send an anonymous browser to the public
     map** (`/`, the URL mapping of `public/map`) instead of starting the login, and so do 6.x's error pages: a show page
-    that fails to render redirects to `/` too. The MCP logs in when an admin page bounces to `/` before it has a session.
+    that fails to render redirects to `/` too. The MCP logs in again when an admin page bounces to `/` (the session may have expired), and reports a 403 if it
+    still does; a form save whose landing page bounces is reported and verified through the web service.
 21. **The licence edit and show forms post to `/ws/licence`** (Grails reverse-maps `licence/index` there) with
     `_action_update`/`_action_delete`, so a browser session is needed on a `/ws/` URL. The licence vocabulary has no
     uniqueness (3.0 vs 3.x duplicates, #289); 5.1.1's `/ws/licence` has no acronym or version, so the MCP reads the
@@ -155,7 +156,8 @@ The guards were mutation-checked: disabling each of the hidden-url refusal, the 
 repatriation row selection, the form fail-closed rule, the dry-run default, the public-map denial, the login-redirect
 detection, the delete dependency check (and its reading of the hubs instead of the stale `hubMembership`), the delete
 retry, the hub reindex list, the `/ws/find` string parsing, the -1 coordinates of a new collection, the licence
-near-duplicate, in-use and vocabulary checks, the login on a bounce to the public map, the session on the `/ws/licence`
+near-duplicate, in-use and vocabulary checks, the login on a bounce to the public map (also with an expired session, and a 403 rather than a login error for a person
+without the role), the root of a collectory under a context path, the tolerated landing bounce after a form save, the session on the `/ws/licence`
 form post and the 5.x licence fallback makes at least one test fail.
 
 ### Integration harness

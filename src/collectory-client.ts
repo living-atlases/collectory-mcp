@@ -28,8 +28,14 @@ export class CollectoryError extends Error {
 /** Where a request lands when it is not logged in (collectory's own /login, the auth server, CAS). */
 const LOGIN_PATH = /\/(login|logout|callback|authorize)\b|oidc|oauth|\/cas\//i;
 
-/** Where 6.x PermissionInterceptor sends a caller without the role (public/map, which UrlMappings maps to "/"). */
-const PUBLIC_MAP = (pathname: string) => pathname === "/" || /\/public\/map$/.test(pathname);
+/**
+ * Where 6.x PermissionInterceptor sends a caller without the role: public/map, which UrlMappings maps to collectory's
+ * root ("/", or "/collectory/" under a context path).
+ */
+export function isPublicMap(baseUrl: string, pathname: string): boolean {
+  const root = new URL(baseUrl.replace(/\/*$/, "/")).pathname;
+  return pathname === root || pathname + "/" === root || /\/public\/map$/.test(pathname);
+}
 
 /** Pages behind @PermissionRequired(roles) only: a person's login, never a machine token. */
 export const isAdminPage = (path: string) => !path.startsWith("/ws/");
@@ -252,7 +258,7 @@ export class CollectoryClient {
       const loc = new URL(res.headers.get("location") ?? "/", url);
       if (!loc.toString().startsWith(this.baseUrl + "/") || LOGIN_PATH.test(loc.pathname)) throw new CollectoryError(path, 401, `redirected to ${loc.origin}${loc.pathname} (not logged in)`);
       // 6.x PermissionInterceptor sends a caller without the role to the public map.
-      if (PUBLIC_MAP(loc.pathname)) throw new CollectoryError(path, 403, "collectory sent the request to its public map: these credentials are not a person with ROLE_EDITOR/ROLE_ADMIN (6.x also does this when the page fails: see collectory's log)");
+      if (isPublicMap(this.baseUrl, loc.pathname)) throw new CollectoryError(path, 403, "collectory sent the request to its public map: these credentials are not a person with ROLE_EDITOR/ROLE_ADMIN (6.x also does this when the page fails: see collectory's log)");
       return this.page(loc.toString().slice(this.baseUrl.length), hops + 1);
     }
     const html = await res.text();
@@ -269,7 +275,7 @@ export class CollectoryClient {
     if (res.status >= 300 && res.status < 400) {
       const loc = new URL(res.headers.get("location") ?? "/", this.baseUrl + path);
       if (!loc.toString().startsWith(this.baseUrl)) throw new CollectoryError(path, 401, `redirected to ${loc.origin}${loc.pathname} (not logged in)`);
-      if (PUBLIC_MAP(loc.pathname)) throw new CollectoryError(path, 403, "collectory sent the request to its public map: these credentials are not a person with ROLE_EDITOR/ROLE_ADMIN (6.x also does this when the page fails: see collectory's log)");
+      if (isPublicMap(this.baseUrl, loc.pathname)) throw new CollectoryError(path, 403, "collectory sent the request to its public map: these credentials are not a person with ROLE_EDITOR/ROLE_ADMIN (6.x also does this when the page fails: see collectory's log)");
       // The POST was accepted (Grails redirects after saving). The page it lands on can still fail to render (5.1.1's
       // show pages do without biocache; 6.x's error page sends the browser to the public map, which reads as a 403
       // here although the role was just accepted): report it, and let the caller verify through the web service.
@@ -316,9 +322,17 @@ export class CollectoryClient {
       return res;
     };
     const res = await send();
-    // Pages guarded only by @PermissionRequired send an anonymous caller to the public map rather than the login.
-    if (o.user && session && (this.needsLogin(res) || (!session.loggedIn && this.toPublicMap(res)))) {
-      await session.login(`${this.baseUrl}/manage/list`);
+    // Pages guarded only by @PermissionRequired send an anonymous caller (or one whose session expired) to the public
+    // map rather than the login. A person without the role costs one more login and then gets the 403.
+    if (o.user && session && (this.needsLogin(res) || this.toPublicMap(res))) {
+      const bounced = !this.needsLogin(res);
+      try {
+        await session.login(`${this.baseUrl}/manage/list`);
+      } catch (e) {
+        // A valid session without the role cannot "log in" again (it lands on the public map): report the bounce.
+        if (bounced) return res;
+        throw e;
+      }
       return send();
     }
     return res;
@@ -326,7 +340,7 @@ export class CollectoryClient {
 
   private toPublicMap(res: Response): boolean {
     const loc = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
-    return !!loc && PUBLIC_MAP(new URL(loc, this.baseUrl).pathname);
+    return !!loc && isPublicMap(this.baseUrl, new URL(loc, this.baseUrl).pathname);
   }
 
   /** 401/403, or a redirect away from collectory or to a login page. */
