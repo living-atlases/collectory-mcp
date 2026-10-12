@@ -111,15 +111,11 @@ export class Workflows {
     for (const c of [...inst, ...coll]) if (!c.trim() || c.length > 200) errors.push(`bad code "${c}"`);
     if (errors.length) throw new Error(errors.join("; "));
 
-    // The same institutionCode/collectionCode pair mapped to two collections makes lookups ambiguous (#206, #214).
-    const conflicts: Array<{ institutionCode: string; collectionCode: string; alreadyMappedTo: string }> = [];
-    const dump = await this.client.codeMap().catch(() => undefined);
-    if (dump) {
-      for (const row of dump) {
-        if (row["collectionUid"] === collectionUid) continue;
-        if (inst.includes(row["institutionCode"]!) && (coll.includes(row["collectionCode"]!) || matchAny)) conflicts.push({ institutionCode: row["institutionCode"]!, collectionCode: row["collectionCode"]!, alreadyMappedTo: `${row["collectionUid"]} ${row["collectionName"] ?? ""}`.trim() });
-      }
-    }
+    // A pair matched by two maps makes lookups ambiguous: collectory takes whichever the database returns first
+    // (#206, #214). The maps come from the collections themselves, not /ws/codeMapDump, which leaves out maps that
+    // match any collection code and have none listed.
+    const { maps, unchecked, note } = await this.codeMappings();
+    const conflicts = maps.filter((m) => m.uid !== collectionUid).flatMap((m) => overlap({ institutionCodes: inst, collectionCodes: coll, matchAny }, m).map((p) => ({ ...p, alreadyMappedTo: `${m.uid} ${m.name ?? ""}`.trim() + (m.withoutCollection ? ` (provider map ${m.providerMapId} without a collection)` : "") })));
     const mapping: Json = { institutionCodes: inst, collectionCodes: coll, exact: o.exact ?? cur["exact"] ?? false, matchAnyCollectionCode: matchAny };
     const warning = o.warning ?? (cur["warning"] as string | undefined);
     if (warning) mapping["warning"] = warning;
@@ -128,21 +124,24 @@ export class Workflows {
       before: cur["institutionCodes"] ? { institutionCodes: curInst, collectionCodes: curColl, exact: cur["exact"], matchAnyCollectionCode: cur["matchAnyCollectionCode"], warning: cur["warning"] } : null,
       after: mapping,
       conflicts,
-      ...(dump ? {} : { note: "could not read /ws/codeMapDump to look for conflicts" }),
+      ...(unchecked ? { unchecked } : {}),
+      ...(note ? { note } : {}),
       reindex: "records already loaded keep their old collection until their data resources are reprocessed and reindexed",
     };
   }
 
   async setCodeMapping(collectionUid: string, o: Parameters<Workflows["planCodeMapping"]>[1], allowConflicts: boolean) {
     const plan = await this.planCodeMapping(collectionUid, o);
-    if (plan.conflicts.length && !allowConflicts) throw new Error(`these code pairs are already mapped to another collection: ${plan.conflicts.map((c) => `${c.institutionCode}/${c.collectionCode} -> ${c.alreadyMappedTo}`).join("; ")}. Fix the other mapping first, or pass allowConflicts:true`);
+    if (plan.conflicts.length && !allowConflicts) throw new Error(`these code pairs are already mapped elsewhere: ${plan.conflicts.map((c) => `${c.institutionCode}/${c.collectionCode} -> ${c.alreadyMappedTo}`).join("; ")}. Fix the other mapping first, or pass allowConflicts:true`);
+    if (plan.unchecked && !allowConflicts) throw new Error(`cannot check every mapping for conflicts: ${plan.unchecked}. Pass allowConflicts:true to save anyway`);
     await this.client.save("collection", collectionUid, { recordsMapping: plan.after });
     const inst = plan.after["institutionCodes"] as string[];
     const coll = plan.after["collectionCodes"] as string[];
     const checks = [];
     for (const i of inst.slice(0, 5)) for (const c of (coll.length ? coll : ["*"]).slice(0, 5)) {
       const r = await this.client.lookupCodes(i, c).catch((e: Error) => ({ error: e.message }));
-      checks.push({ institutionCode: i, collectionCode: c, resolvesTo: (r as Json)["uid"] ?? (r as Json)["error"] ?? null, ok: (r as Json)["uid"] === collectionUid });
+      const to = (r as Json)["uid"] as string | undefined;
+      checks.push({ institutionCode: i, collectionCode: c, resolvesTo: to ?? (r as Json)["error"] ?? null, ok: to === collectionUid, ...(to && entityOf(to) === "institution" ? { problem: `resolves to institution ${to}: a provider map without a collection takes this pair` } : {}) });
     }
     return { ...plan, saved: true, lookups: checks, verified: checks.every((c) => c.ok) };
   }
@@ -584,22 +583,21 @@ export class Workflows {
         if (typeof m === "object" && /missing/i.test(String(m.name ?? ""))) findings.push({ uid: h.uid, name: h.name, problem: `member ${m.uid} does not exist` });
       }
     }
-    const dump = await this.client.codeMap().catch((e: Error) => {
-      findings.push({ uid: "-", problem: `cannot read /ws/codeMapDump: ${e.message.slice(0, 200)}` });
-      return [];
-    });
-    const seen = new Map<string, string>();
-    for (const r of dump) {
-      const k = `${r["institutionCode"]}/${r["collectionCode"]}`;
-      const prev = seen.get(k);
-      if (prev && prev !== r["collectionUid"]) findings.push({ uid: r["collectionUid"]!, name: r["collectionName"], problem: `code pair ${k} is also mapped to ${prev} (ambiguous lookups, #206/#214)` });
-      seen.set(k, r["collectionUid"]!);
+    const { maps, unchecked } = await this.codeMappings();
+    if (unchecked) findings.push({ uid: "-", problem: `code mappings not fully checked: ${unchecked}` });
+    await this.client.codeMap().catch((e: Error) => findings.push({ uid: "-", problem: `/ws/codeMapDump fails (${e.message.slice(0, 120)}): the record loaders that read it get no mappings` }));
+    for (const [i, a] of maps.entries()) {
+      if (a.withoutCollection) findings.push({ uid: a.uid, name: a.name, problem: `provider map ${a.providerMapId} has no collection: ${a.collectionCodes.length ? "it makes /ws/codeMapDump fail; " : ""}the admin UI cannot delete it (NullPointerException) and collectory 6 requires a collection (#214)` });
+      for (const b of maps.slice(i + 1)) {
+        if (b.uid === a.uid) continue;
+        for (const p of overlap(a, b)) findings.push({ uid: a.uid, name: a.name, problem: `code pair ${p.institutionCode}/${p.collectionCode} is also mapped to ${b.uid}${b.withoutCollection ? ` (provider map ${b.providerMapId} without a collection)` : ""} (ambiguous lookups, #206/#214)` });
+      }
     }
-    const mapped = new Set(dump.map((r) => r["collectionUid"]));
+    const mapped = new Set(maps.map((m) => m.uid));
     const collections = await this.client.list("collection");
     const unmapped = collections.filter((c) => !mapped.has(c.uid)).map((c) => c.uid);
     return {
-      checked: { dataResources: drs.length, dataHubs: true, codeMappings: dump.length, collections: collections.length },
+      checked: { dataResources: drs.length, dataHubs: true, codeMappings: maps.length, collections: collections.length },
       findings,
       ...(unmapped.length ? { collectionsWithoutCodeMapping: unmapped, hint: "records of these collections only get their collection uid from a code mapping or a record consumer link (Data mappings wiki page)" } : {}),
       ...(hiddenUrls ? { note: `${hiddenUrls} resources returned their connection parameters without url (no admin access): url checks skipped for them` } : {}),
@@ -607,19 +605,98 @@ export class Workflows {
     };
   }
 
+  /**
+   * Every code mapping. Collections carry theirs (recordsProviderMapping, readable by anyone); provider maps without a
+   * collection, which only databases older than collectory's initial.sql can hold, are only on the admin list.
+   */
+  async codeMappings(): Promise<{ maps: CodeMapping[]; unchecked?: string; note?: string }> {
+    const cols = await this.entities("collection", (await this.client.list("collection")).map((c) => c.uid));
+    const unread = cols.filter((c) => c["unread"]).map((c) => c["uid"]);
+    const maps: CodeMapping[] = [];
+    for (const c of cols) {
+      const m = c["recordsProviderMapping"] as Json | undefined;
+      if (m?.["institutionCodes"]) maps.push({ uid: String(c["uid"]), name: c["name"] as string, institutionCodes: m["institutionCodes"] as string[], collectionCodes: (m["collectionCodes"] as string[]) ?? [], matchAny: !!m["matchAnyCollectionCode"] });
+    }
+    let unchecked = unread.length ? `collections ${unread.slice(0, 10).join(", ")} could not be read` : undefined;
+    let note: string | undefined;
+    if (this.client.hasSession) {
+      try {
+        maps.push(...(await this.mapsWithoutCollection()));
+      } catch (e) {
+        unchecked = [unchecked, `the provider map list could not be read (${(e as Error).message.slice(0, 150)})`].filter(Boolean).join("; ");
+      }
+    } else {
+      // /ws/codeMapDump fails exactly when a map without a collection has collection codes.
+      const dumpOk = await this.client.codeMap().then(() => true, () => false);
+      if (!dumpOk) unchecked = [unchecked, "/ws/codeMapDump fails, as it does when a provider map without a collection has collection codes: log in (COLLECTORY_USERNAME) to check those maps"].filter(Boolean).join("; ");
+      else note = "provider maps without a collection (only on databases older than collectory's initial.sql) are listed only on the admin pages: not checked without a login";
+    }
+    return { maps, ...(unchecked ? { unchecked } : {}), ...(note ? { note } : {}) };
+  }
+
+  /** Provider maps without a collection, from /providerMap/list (a person's login) and each map's show page. */
+  private async mapsWithoutCollection(): Promise<CodeMapping[]> {
+    const { html } = await this.client.page("/providerMap/list?max=100000");
+    const $ = cheerio.load(html);
+    const out: CodeMapping[] = [];
+    for (const tr of $("table tbody tr").toArray()) {
+      const td = $(tr).find("td");
+      if (td.length < 7 || $(td[2]).text().trim()) continue;
+      const id = $(td[0]).find("a").attr("href")?.match(/\/providerMap\/show\/(\d+)/)?.[1];
+      if (!id) continue;
+      const show = await this.client.page(`/providerMap/show/${id}`);
+      const inUid = show.html.match(/\/institution\/show\/(in\d+)/)?.[1];
+      const codes = (i: number) => $(td[i]).text().trim().split(/\s+/).filter(Boolean);
+      out.push({ uid: inUid ?? `providerMap ${id}`, name: $(td[1]).text().trim() || undefined, institutionCodes: codes(5), collectionCodes: codes(6), matchAny: /yes|true/i.test($(td[4]).text()), withoutCollection: true, providerMapId: id });
+    }
+    return out;
+  }
+
   /** Full JSON of several data resources: POST /ws/find (5.1+), one GET per uid when that fails. */
-  async resources(uids: string[]): Promise<Json[]> {
+  resources(uids: string[]): Promise<Json[]> {
+    return this.entities("dataResource", uids);
+  }
+
+  async entities(entity: Entity, uids: string[]): Promise<Json[]> {
     if (!uids.length) return [];
     try {
       const out: Json[] = [];
-      for (let i = 0; i < uids.length; i += 100) out.push(...((await this.client.find("dataResource", uids.slice(i, i + 100))) as Json[]));
+      for (let i = 0; i < uids.length; i += 100) out.push(...((await this.client.find(entity, uids.slice(i, i + 100))) as Json[]));
       return out;
     } catch {
       const out: Json[] = [];
-      for (let i = 0; i < uids.length; i += 8) out.push(...(await Promise.all(uids.slice(i, i + 8).map((u) => this.client.get<Json>(u, "dataResource").catch(() => ({ uid: u, name: "(could not be read)" }))))));
+      for (let i = 0; i < uids.length; i += 8) out.push(...(await Promise.all(uids.slice(i, i + 8).map((u) => this.client.get<Json>(u, entity).catch(() => ({ uid: u, name: "(could not be read)", unread: true }))))));
       return out;
     }
   }
+}
+
+export interface CodeMapping {
+  /** The collection (or, for a provider map without a collection, its institution) lookups resolve to. */
+  uid: string;
+  name?: string;
+  institutionCodes: string[];
+  collectionCodes: string[];
+  matchAny: boolean;
+  withoutCollection?: boolean;
+  providerMapId?: string;
+}
+
+/**
+ * Code pairs two maps both match. collectory compares codes in MySQL, case-insensitively, and a map with
+ * matchAnyCollectionCode takes every collection code of its institution codes ("*").
+ */
+export function overlap(a: Pick<CodeMapping, "institutionCodes" | "collectionCodes" | "matchAny">, b: Pick<CodeMapping, "institutionCodes" | "collectionCodes" | "matchAny">) {
+  const low = (xs: string[]) => new Set(xs.map((x) => x.toLowerCase()));
+  const bInst = low(b.institutionCodes);
+  const bColl = low(b.collectionCodes);
+  const out: Array<{ institutionCode: string; collectionCode: string }> = [];
+  for (const i of a.institutionCodes) {
+    if (!bInst.has(i.toLowerCase())) continue;
+    if (a.matchAny || b.matchAny) out.push({ institutionCode: i, collectionCode: a.matchAny && b.matchAny ? "*" : (a.matchAny ? b.collectionCodes : a.collectionCodes).join("|") || "*" });
+    else for (const c of a.collectionCodes) if (bColl.has(c.toLowerCase())) out.push({ institutionCode: i, collectionCode: c });
+  }
+  return out;
 }
 
 export interface LicenceInput {

@@ -119,6 +119,20 @@ describe("real collectory: writes with JWTs from the test issuer", { skip: (!URL
     assert.match(c.text, new RegExp(`${code}/B -> ${co}`));
   });
 
+  it("a mapping that matches any collection code is a conflict although /ws/codeMapDump leaves it out", async () => {
+    const code = `MCPANY${stamp}`.toUpperCase();
+    const any = await create("collection", { name: `mcp-it any ${stamp}` });
+    const s = await m2m("collectory_set_code_mapping", { collectionUid: any, institutionCodes: { add: [code] }, matchAnyCollectionCode: true, dryRun: false, confirm: true });
+    assert.equal(s.json?.verified, true, s.text);
+    const dump = (await m2m("collectory_code_map", { filter: any })).json;
+    assert.deepEqual(dump.mappings.map((m: any) => [m.uid, m.matchAny]), [[any, true]]);
+    const other = await create("collection", { name: `mcp-it any other ${stamp}` });
+    const c = await m2m("collectory_set_code_mapping", { collectionUid: other, institutionCodes: { add: [code.toLowerCase()] }, collectionCodes: { add: ["Z"] }, dryRun: false, confirm: true });
+    assert.match(c.text, new RegExp(`${code.toLowerCase()}/Z -> ${any}`));
+    const look = await m2m("collectory_lookup_codes", { institutionCode: code.toLowerCase(), collectionCode: "Z" });
+    assert.equal(look.json.uid, any, "collectory compares codes case-insensitively: " + look.text);
+  });
+
   it("data resource connection parameters: merge keeps the url; the editor (no ROLE_ADMIN) cannot see it and is refused", async () => {
     const dp = await create("dataProvider", { name: `mcp-it provider ${stamp}` });
     const dr = await create("dataResource", { name: `mcp-it resource ${stamp}`, resourceType: "records", dataProvider: { uid: dp }, connectionParameters: { protocol: "DwCA", url: "https://example.org/dwca.zip", termsForUniqueKey: ["occurrenceID"] } });

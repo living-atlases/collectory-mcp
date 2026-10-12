@@ -56,6 +56,7 @@ describe("collectory-mcp over MCP against a fake collectory 6.3.0", () => {
   beforeEach(() => {
     fake.state.entities.clear();
     fake.state.providerMaps.clear();
+    fake.state.legacyMaps = [];
     fake.state.ipt.length = 0;
     fake.state.requests.length = 0;
     fake.state.contacts.clear();
@@ -159,6 +160,39 @@ describe("collectory-mcp over MCP against a fake collectory 6.3.0", () => {
     assert.equal(c.isError, true);
     assert.match(c.text, /MNCN\/ENT -> co2/);
     assert.ok(!fake.state.providerMaps.get("co1")!.institutionCodes.includes("MNCN"), "a conflicting mapping must not be saved");
+  });
+
+  it("code mapping conflicts include maps that match any collection code (absent from codeMapDump) and differ in case", async () => {
+    fake.state.providerMaps.set("co2", { institutionCodes: ["MNCN"], collectionCodes: [], exact: false, matchAnyCollectionCode: true });
+    const { call } = await connect(fake, { token: "m2m-token" });
+    const p = await call("collectory_set_code_mapping", { collectionUid: "co1", institutionCodes: { add: ["mncn"] }, collectionCodes: { add: ["HERB"] } });
+    assert.deepEqual(p.json.conflicts.map((c: any) => c.alreadyMappedTo), ["co2 Entomología"], p.text);
+    const s = await call("collectory_set_code_mapping", { collectionUid: "co1", institutionCodes: { add: ["mncn"] }, collectionCodes: { add: ["HERB"] }, dryRun: false, confirm: true });
+    assert.equal(s.isError, true);
+    assert.equal(fake.state.providerMaps.get("co1"), undefined, "a conflicting mapping must not be saved");
+    const m = await call("collectory_code_map", { filter: "MNCN" });
+    assert.deepEqual(m.json.mappings.map((x: any) => [x.uid, x.matchAny]), [["co2", true]]);
+  });
+
+  it("provider maps without a collection (old databases): checked through the admin list, refused without it, and named when they take a lookup", async () => {
+    fake.add("institution", { uid: "in9", name: "Old museum" });
+    fake.state.legacyMaps.push({ id: 7, institution: "in9", institutionCodes: ["OLD"], collectionCodes: ["X"], matchAnyCollectionCode: false });
+    const args = { collectionUid: "co1", institutionCodes: { add: ["OLD"] }, collectionCodes: { add: ["X"] }, dryRun: false, confirm: true };
+    const token = await connect(fake, { token: "m2m-token" });
+    const blind = await token.call("collectory_set_code_mapping", args);
+    assert.equal(blind.isError, true);
+    assert.match(blind.text, /cannot check every mapping.*codeMapDump fails/s);
+    assert.equal(fake.state.providerMaps.get("co1"), undefined);
+    const both = await connect(fake, { token: "m2m-token", login: true });
+    const seen = await both.call("collectory_set_code_mapping", args);
+    assert.match(seen.text, /OLD\/X -> in9 Old museum \(provider map 7 without a collection\)/);
+    const forced = await both.call("collectory_set_code_mapping", { ...args, allowConflicts: true });
+    assert.equal(forced.json.verified, false);
+    assert.match(forced.json.lookups[0].problem, /resolves to institution in9/);
+    const a = (await both.call("collectory_audit")).json.findings.map((f: any) => `${f.uid}: ${f.problem}`).join("\n");
+    assert.match(a, /in9: provider map 7 has no collection: it makes \/ws\/codeMapDump fail/);
+    assert.match(a, /\/ws\/codeMapDump fails/);
+    assert.match(a, /OLD\/X is also mapped to in9|OLD\/X is also mapped to co1/);
   });
 
   it("hub members: data resources through the web service, as a JSON string, with the resources to reindex", async () => {

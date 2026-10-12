@@ -44,7 +44,7 @@ MCP client ──stdio or Streamable HTTP──▶ collectory-mcp ──HTTP─�
 |---|---|---|
 | `collectory_health` | `/openapi/openapi.json`, `/ws/dataHub`, `/ws/contacts/0` (credential probe), `/manage/list` | read |
 | `collectory_list`, `collectory_get`, `collectory_count` | `/ws/{entity}`, `/ws/{entity}/{uid}`, `POST /ws/find/{entity}`, `/ws/{entity}/count` | read |
-| `collectory_lookup_codes`, `collectory_code_map` | `/ws/lookup/inst/{i}/coll/{c}`, `/ws/codeMapDump` | read |
+| `collectory_lookup_codes`, `collectory_code_map` | `/ws/lookup/inst/{i}/coll/{c}`; every collection's `recordsProviderMapping` (`POST /ws/find/collection`) plus, with a login, `/providerMap/list` and `show` for maps without a collection | read |
 | `collectory_contacts`, `collectory_licences` | `/ws/{entity}/{uid}/contacts`, `/ws/licence` | read |
 | `collectory_audit` | the above, over the whole registry | read |
 | `collectory_save_entity` | `POST /ws/{entity}[/{uid}]` | write, dry run by default |
@@ -98,8 +98,9 @@ What the MCP guards against, and what could be fixed or added upstream:
 9. **Contact links**: `POST /ws/{entity}/{uid}/contacts/{id}` on an existing link binds the link but saves the contact,
    so changes are lost; `notify` is ignored on create; `GET /ws/{entity}/{uid}/contacts/{id}` ignores the entity.
    `collectory_add_contact` only creates links.
-10. **`codeMapDump`** hard-codes ALA's `dp20`/`dh1` (OZCAM) in every row, and, from the code, a ProviderMap of an institution
-    without a collection would make it fail (`it.collection.uid` on null).
+10. **`codeMapDump`** hard-codes ALA's `dp20`/`dh1` (OZCAM) in every row, leaves out maps that match any collection code
+    and list none (they still take lookups), and fails (NullPointerException) when a provider map without a collection
+    has collection codes. The MCP reads the collections' own mappings instead.
 11. **`CrudService.updateExternalIdentifiers`** saves identifiers without linking them to the entity in 6.x (the UI path
     does link them). Treat `externalIdentifiers` writes through the web service as unreliable.
 12. **6.0.x**: every single data resource GET and every anonymous protected call answers 500 (`FindBest`), including the
@@ -124,14 +125,23 @@ Found while running against a real 6.3.0 (the integration harness):
     an authenticated contacts query; `collectory_health` mentions it on a 500.
 20. **Pages guarded only by `@PermissionRequired` (licences, data resources…) send an anonymous browser to the public
     map** (`/`, the URL mapping of `public/map`) instead of starting the login, and so do 6.x's error pages: a show page
-    that fails to render redirects to `/` too. The MCP logs in again when an admin page bounces to `/` (the session may have expired), and reports a 403 if it
-    still does; a form save whose landing page bounces is reported and verified through the web service.
+    that fails to render redirects to `/` too. The MCP logs in again when an admin page bounces to `/` (the session may
+    have expired), and reports a 403 if it still does; a form save whose landing page bounces is reported and verified
+    through the web service.
 21. **The licence edit and show forms post to `/ws/licence`** (Grails reverse-maps `licence/index` there) with
     `_action_update`/`_action_delete`, so a browser session is needed on a `/ws/` URL. The licence vocabulary has no
     uniqueness (3.0 vs 3.x duplicates, #289); 5.1.1's `/ws/licence` has no acronym or version, so the MCP reads the
     admin list there.
 22. **Every data resource show page fails** when `gbifLicenceMappingUrl` points to a missing file (the default,
     `default-gbif-licence-mapping.json`, which ala-install deploys); `null` uses the built-in mapping.
+23. **Provider maps without a collection** (`ProviderMap.collection` is `nullable: true`, and `findMatch` falls back to
+    the institution) cannot be created on a database built from `initial.sql` (5.1.1 and 6.3.0: `collection_id`
+    `NOT NULL`, a 500), and #214 made the collection mandatory in the form. Older databases may still hold them: they
+    make `codeMapDump` fail when they have collection codes, the admin UI cannot delete them (`delete()` reads
+    `collection.uid`, NullPointerException), and they take lookups away from collections. The MCP does not create them;
+    the conflict check, `collectory_code_map` and the audit include them when there is a login, and a mapping is
+    refused (unless `allowConflicts`) when `codeMapDump` fails and they cannot be read.
+24. **Codes are compared case-insensitively** by the lookup (MySQL collation), so `mncn` and `MNCN` conflict.
 
 What would make this safe by design: a JSON API for provider maps, licences, consumers and hub members accepting the
 same scope as the other writes; server-side validation of connection parameters; a dry-run mode for the IPT scan;
@@ -158,7 +168,8 @@ detection, the delete dependency check (and its reading of the hubs instead of t
 retry, the hub reindex list, the `/ws/find` string parsing, the -1 coordinates of a new collection, the licence
 near-duplicate, in-use and vocabulary checks, the login on a bounce to the public map (also with an expired session, and a 403 rather than a login error for a person
 without the role), the root of a collectory under a context path, the tolerated landing bounce after a form save, the session on the `/ws/licence`
-form post and the 5.x licence fallback makes at least one test fail.
+form post, the 5.x licence fallback, the code mapping conflicts with matchAny maps, in any case, and with maps without
+a collection (refused when they cannot be read), and the lookup that resolves to an institution makes at least one test fail.
 
 ### Integration harness
 

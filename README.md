@@ -29,8 +29,9 @@ It works like its siblings [spatial-mcp](https://github.com/living-atlases/spati
   change), add contacts, check what refers to an entity before deleting it.
 - **Licences**: add or update the licences resources can choose, refusing near-duplicates (3.0 vs 3.x), and refuse to
   delete one that resources still use.
-- **Find problems**: resources without licence (or with one outside the vocabulary) or unique key terms, broken website URLs, hub members that no longer
-  exist, ambiguous code mappings, collections nothing maps to.
+- **Find problems**: resources without licence (or with one outside the vocabulary) or unique key terms, broken
+  website URLs, hub members that no longer exist, ambiguous code mappings (including those that match any collection
+  code, and provider maps without a collection left in old databases), collections nothing maps to.
 
 ## Before you start
 

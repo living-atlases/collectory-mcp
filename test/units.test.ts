@@ -6,7 +6,7 @@ import { checkConnectionParameters, planEntityWrite, same } from "../src/entitie
 import { FormContractError, fill, findForm, pageMessages } from "../src/forms.ts";
 import { Redactor } from "../src/redact.ts";
 import { authFor } from "../src/stdio.ts";
-import { parseIptRss } from "../src/workflows.ts";
+import { overlap, parseIptRss } from "../src/workflows.ts";
 
 describe("entities", () => {
   it("routes uids to entities", () => {
@@ -154,5 +154,19 @@ describe("public map detection", () => {
     assert.equal(isPublicMap("https://example.org/collectory", "/collectory/public/map"), true);
     assert.equal(isPublicMap("https://example.org/collectory", "/collectory/licence/list"), false);
     assert.equal(isPublicMap("https://example.org/collectory", "/"), false);
+  });
+});
+
+describe("code mapping overlap", () => {
+  const m = (i: string[], c: string[], matchAny = false) => ({ institutionCodes: i, collectionCodes: c, matchAny });
+  it("shared pairs, case-insensitively", () => {
+    assert.deepEqual(overlap(m(["MNCN"], ["ENT", "BOT"]), m(["mncn"], ["ent"])), [{ institutionCode: "MNCN", collectionCode: "ENT" }]);
+    assert.deepEqual(overlap(m(["MNCN"], ["ENT"]), m(["MNCN"], ["BOT"])), []);
+    assert.deepEqual(overlap(m(["MA"], ["ENT"]), m(["MNCN"], ["ENT"])), []);
+  });
+  it("a map that matches any collection code takes every code of its institution codes", () => {
+    assert.deepEqual(overlap(m(["MNCN"], ["ENT"]), m(["MNCN"], [], true)), [{ institutionCode: "MNCN", collectionCode: "ENT" }]);
+    assert.deepEqual(overlap(m(["MNCN"], [], true), m(["MNCN"], ["ENT"])), [{ institutionCode: "MNCN", collectionCode: "ENT" }]);
+    assert.deepEqual(overlap(m(["MNCN"], [], true), m(["MNCN"], [], true)), [{ institutionCode: "MNCN", collectionCode: "*" }]);
   });
 });

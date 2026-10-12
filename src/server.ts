@@ -115,11 +115,11 @@ export function createServer(deps: ServerDeps): McpServer {
 
   tool("collectory_lookup_codes", "read", "Which collection (or institution) an institutionCode/collectionCode pair of the occurrence records resolves to, as biocache/pipelines resolve it", { institutionCode: z.string(), collectionCode: z.string() }, async (a) => client.lookupCodes(a.institutionCode, a.collectionCode));
 
-  tool("collectory_code_map", "read", "Every institutionCode/collectionCode -> collection mapping (from /ws/codeMapDump), optionally filtered by a code or collection uid", { filter: z.string().optional() }, async (a) => {
-    const rows = await client.codeMap();
+  tool("collectory_code_map", "read", "Every institutionCode/collectionCode mapping: one entry per collection (and per provider map without a collection, with a login), including maps that match any collection code (which /ws/codeMapDump leaves out). Optionally filtered by a code or uid", { filter: z.string().optional() }, async (a) => {
+    const { maps, unchecked, note } = await wf.codeMappings();
     const f = a.filter?.toLowerCase();
-    const out = f ? rows.filter((r) => [r["institutionCode"], r["collectionCode"], r["collectionUid"], r["institutionUid"]].some((x) => x?.toLowerCase() === f)) : rows;
-    return { count: out.length, mappings: out.map((r) => ({ institutionCode: r["institutionCode"], collectionCode: r["collectionCode"], collectionUid: r["collectionUid"], collectionName: r["collectionName"], institutionUid: r["institutionUid"] })) };
+    const out = f ? maps.filter((m) => [m.uid, ...m.institutionCodes, ...m.collectionCodes].some((x) => x.toLowerCase() === f)) : maps;
+    return { count: out.length, mappings: out, ...(unchecked ? { unchecked } : {}), ...(note ? { note } : {}) };
   });
 
   tool("collectory_contacts", "read", "Contacts linked to an entity, with their role and flags", { uid: uid() }, async (a) => client.contactsFor(a.uid));

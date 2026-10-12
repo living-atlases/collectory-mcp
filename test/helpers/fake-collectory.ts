@@ -29,6 +29,8 @@ export interface FakeState {
   contacts: Map<number, Json>;
   links: Array<{ uid: string; contactId: number; role: string; administrator: boolean; primaryContact: boolean }>;
   providerMaps: Map<string, { institutionCodes: string[]; collectionCodes: string[]; exact: boolean; matchAnyCollectionCode: boolean; warning?: string }>;
+  /** Provider maps without a collection (a database older than initial.sql, whose collection_id is nullable). */
+  legacyMaps: Array<{ id: number; institution: string; institutionCodes: string[]; collectionCodes: string[]; matchAnyCollectionCode: boolean }>;
   ipt: Array<{ title: string; link: string; description: string; pubDate: string; dwca: string; guid: string }>;
   gbif: Map<string, { pubDate: string }>;
   loads: Map<string, { names: string[]; polls: number }>;
@@ -61,7 +63,7 @@ const WRITABLE: Record<string, string[]> = {
 };
 
 export async function startFakeCollectory(opts: FakeOptions = {}) {
-  const state: FakeState = { entities: new Map(), contacts: new Map(), links: [], providerMaps: new Map(), ipt: [], gbif: new Map(), loads: new Map(), licences: new Map([[1, { name: "Creative Commons Attribution", acronym: "CC-BY", licenceVersion: "4.0", url: "https://creativecommons.org/licenses/by/4.0/", version: 0 }]]), requests: [], counters: { in: 0, co: 0, dp: 0, dr: 0, dh: 0, contact: 0 } };
+  const state: FakeState = { entities: new Map(), contacts: new Map(), links: [], providerMaps: new Map(), legacyMaps: [], ipt: [], gbif: new Map(), loads: new Map(), licences: new Map([[1, { name: "Creative Commons Attribution", acronym: "CC-BY", licenceVersion: "4.0", url: "https://creativecommons.org/licenses/by/4.0/", version: 0 }]]), requests: [], counters: { in: 0, co: 0, dp: 0, dr: 0, dh: 0, contact: 0 } };
   const sessions = new Map<string, string[]>();
   const deleting = new Set<string>();
   let base = "";
@@ -185,6 +187,8 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
     // ---------- web services ----------
     if (isWs) {
       if (path === "/ws/codeMapDump") {
+        // DataController.codeMapDump reads it.collection.uid inside the loop over collection codes
+        if (state.legacyMaps.some((m) => m.collectionCodes.length)) return send(res, 500, "NullPointerException: Cannot get property 'uid' on null object");
         let csv = "collectionCode,institutionCode,collectionUid,collectionName,institutionUid,institutionName,dataProviderUid,dataProviderName,dataHubUid,dataHubName,taxonomicHints\n";
         for (const [co, pm] of state.providerMaps) for (const c of pm.collectionCodes) for (const i of pm.institutionCodes) csv += `${c},${i},${co},"${state.entities.get(co)?.["name"]}",null,"null",dp20,OZCAM,dh1,OZCAM,\n`;
         return send(res, 200, csv, { "Content-Type": "text/csv" });
@@ -192,6 +196,10 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
       const lk = path.match(/^\/ws\/lookup\/inst\/([^/]+)\/coll\/([^/]+)$/);
       if (lk) {
         const [i, c] = [decodeURIComponent(lk[1]!), decodeURIComponent(lk[2]!)];
+        // ProviderMap.findMatch: the first map from the database (here, the older maps without a collection), codes
+        // compared case-insensitively by MySQL
+        const eq = (xs: string[], x: string) => xs.some((y) => y.toLowerCase() === x.toLowerCase());
+        for (const m of state.legacyMaps) if (eq(m.institutionCodes, i) && (m.matchAnyCollectionCode || eq(m.collectionCodes, c))) return send(res, 200, { uid: m.institution, name: state.entities.get(m.institution)?.["name"] });
         for (const [co, pm] of state.providerMaps) if (pm.institutionCodes.includes(i) && (pm.matchAnyCollectionCode || pm.collectionCodes.includes(c))) return send(res, 200, { uid: co, name: state.entities.get(co)?.["name"] });
         return send(res, 200, { error: `Unable to find collection for ${i}/${c}` });
       }
@@ -349,6 +357,21 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
       flashes.set(e["uid"], gr[2] === "deleteGBIF" ? "Resource removed from GBIF" : "Successfully registered in GBIF");
       return redirect(res, `/${gr[1]}/show/${e["uid"]}`);
     }
+    // provider maps (views/providerMap/list.gsp and show.gsp of 6.3.0)
+    if (path === "/providerMap/list") {
+      const yes = (b: boolean) => (b ? "Yes" : "No");
+      const rows = [
+        ...state.legacyMaps.map((m) => `<tr><td><a href="/providerMap/show/${m.id}?returnTo=">${m.id}</a></td><td>${state.entities.get(m.institution)?.["name"] ?? ""}</td><td></td><td>Yes</td><td>${yes(m.matchAnyCollectionCode)}</td><td>${m.institutionCodes.join(" ")}</td><td>${m.collectionCodes.join(" ")}</td></tr>`),
+        ...[...state.providerMaps].map(([co, pm], k) => `<tr><td><a href="/providerMap/show/${100 + k}?returnTo=">${100 + k}</a></td><td></td><td>${state.entities.get(co)?.["name"]}</td><td>${yes(pm.exact)}</td><td>${yes(pm.matchAnyCollectionCode)}</td><td>${pm.institutionCodes.join(" ")}</td><td>${pm.collectionCodes.join(" ")}</td></tr>`),
+      ];
+      return send(res, 200, page("provider maps", `<table><thead><tr><th>Id</th><th>Institution</th><th>Collection</th><th>Exact</th><th>Match Any Collection Code</th><th>Institution Codes</th><th>Collection Codes</th></tr></thead><tbody>${rows.join("")}</tbody></table>`));
+    }
+    const pmShow = path.match(/^\/providerMap\/show\/(\d+)$/);
+    if (pmShow) {
+      const m = state.legacyMaps.find((x) => x.id === Number(pmShow[1]));
+      return m ? send(res, 200, page("provider map", `<a href="/institution/show/${m.institution}">${state.entities.get(m.institution)?.["name"]}</a><a href="/collection/show"></a>`)) : redirect(res, "/providerMap/list");
+    }
+
     // licences (views/licence/*.gsp of 6.3.0)
     const licenceForm = (l?: { name: string; acronym: string; licenceVersion: string; url: string; imageUrl?: string }) => ["name", "acronym", "licenceVersion"].map((k) => `<input type="text" name="${k}" maxlength="200" required value="${(l as any)?.[k] ?? ""}">`).join("") + `<input type="url" name="url" maxlength="200" required value="${l?.url ?? ""}"><input type="url" name="imageUrl" maxlength="200" required value="${l?.imageUrl ?? ""}">`;
     if (path === "/licence/list") return send(res, 200, page("licences", `<table><thead><tr><th>Name</th><th>URL</th><th>Acronym</th><th>Version</th><th>Image</th></tr></thead><tbody>${[...state.licences].map(([id, l]) => `<tr><td><a href="/licence/show/${id}">${l.name}</a></td><td>${l.url}</td><td>${l.acronym}</td><td>${l.licenceVersion}</td><td>${l.imageUrl ? `<img src="${l.imageUrl}">` : ""}</td></tr>`).join("")}</tbody></table>`));
