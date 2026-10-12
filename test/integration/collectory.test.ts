@@ -176,9 +176,7 @@ describe("real collectory: writes with JWTs from the test issuer", { skip: (!URL
     const u = await m2m("collectory_update_contact", { uid: co, email, role: "Director", administrator: true, primaryContact: true, dryRun: false, confirm: true });
     assert.equal(u.json?.verified, true, u.text);
     const rm = await m2m("collectory_remove_contact", { uid: co, email, confirm: true });
-    assert.equal(rm.isError, false, rm.text);
-    // 5.1.x does not flush deletes through the web service (#287): the tool must say so rather than claim it
-    if (rm.json.removed === false) assert.match(rm.json.note, /#287/);
+    assert.equal(rm.json?.removed, true, rm.text);
   });
 
   it("delete checks what still refers to the entity", async () => {

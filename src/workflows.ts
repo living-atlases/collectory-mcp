@@ -502,7 +502,7 @@ export class Workflows {
     const contact = await this.client.contactByEmail(email);
     await this.client.unlinkContact(uid, Number(contact?.["id"]));
     const gone = (await this.linkOf(uid, email)) === undefined;
-    return { ...plan, removed: gone, ...(gone ? {} : { note: "the link is still there: collectory 5.1.x does not flush deletes through the web service (#287)" }) };
+    return { ...plan, removed: gone };
   }
 
   // ---------------- licences ----------------
