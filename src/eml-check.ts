@@ -61,11 +61,7 @@ export async function loadSchemas(fetchText: (url: string) => Promise<string>, b
 
 export interface Context {
   uid: string;
-  /** collectory version, e.g. 6.3 */
-  major: number;
-  minor: number;
   licenseType?: string;
-  licenseVersion?: string;
 }
 
 /** Validate an EML document and explain each problem. */
@@ -105,6 +101,7 @@ export async function checkEml(xml: string, schemas: Schemas | undefined, ctx: C
 export class EmlCheck {
   private schemas?: Promise<Schemas | undefined>;
   private schemaNote?: string;
+  private oldRenderer = false;
 
   constructor(
     readonly client: CollectoryClient,
@@ -114,9 +111,8 @@ export class EmlCheck {
 
   async check(uid: string) {
     if (entityOf(uid) !== "dataResource") throw new Error(`${uid} is not a data resource (dr…)`);
-    const v = await this.client.version().catch(() => ({ version: "unknown", major: 0, minor: 0 }));
     const dr = await this.client.get<Json>(uid, "dataResource");
-    const ctx: Context = { uid, major: v.major, minor: v.minor, licenseType: dr["licenseType"] as string | undefined, licenseVersion: dr["licenseVersion"] as string | undefined };
+    const ctx: Context = { uid, licenseType: dr["licenseType"] as string | undefined };
     const gbif = await this.gbif(uid, dr).catch((e: Error) => ({ source: "unknown" as const, note: e.message }));
     let xml: string;
     try {
@@ -134,6 +130,7 @@ export class EmlCheck {
     }
     const schemas = await this.loadSchemas();
     const r = await checkEml(xml, schemas, ctx);
+    if (r.problems.some((p) => / 6\.3\.0 fixed /.test(p.fix))) this.oldRenderer = true;
     return {
       uid,
       name: dr["name"],
@@ -148,11 +145,10 @@ export class EmlCheck {
   /** Common to all the resources checked. */
   async about(): Promise<Json> {
     const s = await this.loadSchemas();
-    const v = await this.client.version().catch(() => undefined);
     return {
       schema: s ? `GBIF EML profile 1.1 (${this.schemaBase}/${PROFILE})` : null,
       ...(s?.changed.length ? { schemaNote: `${s.changed.join(", ")} differ from the versions this was tested with` } : {}),
-      ...(v && (v.major < 6 || (v.major === 6 && v.minor < 3)) ? { collectory: `${v.version}: its EML renderer writes elements the GBIF profile rejects whatever the data (packageId, empty or misplaced elements, #303); 6.3.0 fixes most of them (#318)` } : {}),
+      ...(this.oldRenderer ? { collectory: "this collectory's EML renderer predates 6.3.0 (whatever version it reports): it writes elements the GBIF profile rejects whatever the data (#303); 6.3.0 fixes most of them (#318)" } : {}),
       fullCheck: `the GBIF data validator (${VALIDATOR}) also checks the data`,
     };
   }
@@ -173,7 +169,7 @@ export class EmlCheck {
 
   /**
    * Where GBIF's metadata for the resource comes from. GBIF keeps the EML it last crawled (dataset/{key}/document);
-   * collectory's renderer always writes {serverURL}/public/show/{uid} in it, so finding that URL there means GBIF's
+   * collectory's renderer always writes {serverURL}/public/show/{uid} in it (the alaPublicUrl), so finding it there means GBIF's
    * copy is collectory's, through the archive collectory registered (gbifRegistryKey) or an export of it.
    */
   private async gbif(uid: string, dr: Json): Promise<{ source: "collectory" | "ipt" | "other" | "not-registered" | "unknown"; key?: string; note: string }> {
@@ -187,7 +183,9 @@ export class EmlCheck {
       return { source: "unknown", key, note: `GBIF dataset ${key}: ${(e as Error).message.slice(0, 200)}` };
     }
     const doc = await this.client.external(`${this.gbifApi}/dataset/${key}/document`, "application/xml").catch(() => "");
-    if (doc.includes(`/public/show/${uid}<`) || doc.includes(`/public/show/${uid}"`))
+    // the resource's own public page (any scheme); without alaPublicUrl, any host's /public/show/{uid}
+    const page = typeof dr["alaPublicUrl"] === "string" && dr["alaPublicUrl"] ? (dr["alaPublicUrl"] as string).replace(/^https?:/, "") : `/public/show/${uid}`;
+    if (doc.includes(`${page}<`) || doc.includes(`${page}"`))
       return { source: "collectory", key, note: "GBIF's copy of the metadata comes from this collectory: fixes here reach GBIF at its next crawl of the dataset" };
     const ik = ds["installationKey"] as string | undefined;
     const inst = ik ? ((JSON.parse(await this.client.external(`${this.gbifApi}/installation/${ik}`).catch(() => "{}")) as Json) ?? {}) : {};
@@ -217,25 +215,24 @@ function elementPaths(xml: string): Map<string, string> {
   return out;
 }
 
-const before63 = (c: Context) => c.major < 6 || (c.major === 6 && c.minor < 3);
-
+/**
+ * The fix for a schema error. What 6.3.0 fixed (#318) is told by the symptom, not by the version collectory reports
+ * (ALA's production answers 5.1.1 in its OpenAPI document while rendering EML of a 6.3.0 pre-release).
+ */
 function fixFor(element: string, path: string, message: string, c: Context): string {
-  const upgrade = (what: string) => (before63(c) ? `collectory before 6.3.0 ${what}: upgrade (#303, fixed by #318)` : `collectory ${c.major}.${c.minor} ${what} (#303)`);
-  const orUpgrade = (fix: string, what: string) => (before63(c) ? `${fix}, or upgrade: collectory before 6.3.0 ${what} (#318)` : fix);
-  if (element === "eml" && /packageId/.test(message)) return upgrade("does not write packageId");
-  if (element === "ulink") return `more than one licence matches licenseType ${c.licenseType ?? "?"} ${c.licenseVersion ? `version ${c.licenseVersion}` : "(no licenseVersion: any version matches)"}: ${c.licenseVersion ? "" : "set licenseVersion (collectory_save_entity), or "}remove the near-duplicate licence (collectory_delete_licence, #289)${before63(c) ? "; collectory 6.3.0 writes only the first (#318)" : ""}`;
-  if (element === "methods") return orUpgrade("set methodStepDescription (collectory_save_entity)", "writes an empty methods");
+  const renderer = (what: string) => `this collectory ${what}, which collectory 6.3.0 fixed (#303, #318): upgrade`;
+  const emptyIn63 = (fix: string) => `${fix}; collectory 6.3.0 or later omits it when empty (#318)`;
+  if (element === "eml" && /packageId/.test(message)) return renderer("does not write packageId");
+  if (element === "ulink") return `more than one licence has the acronym ${c.licenseType ?? "of licenseType"} (near-duplicates such as 4.0 and 4.x, #289) and this collectory writes them all: remove the near-duplicate (collectory_delete_licence), or upgrade: collectory 6.3.0 writes only one (#318)`;
+  if (element === "methods") return emptyIn63("set methodStepDescription (collectory_save_entity)");
   if (element === "coverage")
-    return orUpgrade(
-      "set geographicDescription with all four bounding coordinates, or beginDate and endDate (collectory_save_entity). An incomplete bounding box (westBoundingCoordinate without the other three) also leaves coverage empty in 6.3.0 and develop",
-      "writes an empty coverage when there is none",
-    );
+    return "set geographicDescription with all four bounding coordinates, or beginDate and endDate (collectory_save_entity). Before 6.3.0 collectory writes an empty coverage when there is none (#318); 6.3.0 and develop still do when the bounding box is incomplete (westBoundingCoordinate without the other three)";
   if (/BoundingCoordinate$/.test(element)) return "set all four bounding coordinates (collectory_save_entity)";
   if (element === "generalTaxonomicCoverage") return "the taxonomic hints have no range: add one in the admin UI (Edit > Taxonomic hints); collectory writes generalTaxonomicCoverage from it even when empty (6.3.0 and develop)";
-  if (element === "citation" && /not expected/.test(message)) return upgrade("writes the GBIF metadata in the wrong order");
-  if (element === "citation") return orUpgrade("set citation (collectory_save_entity)", "writes it even when empty");
-  if (element === "rights" && path.includes("gbif")) return upgrade("writes a rights element the GBIF profile does not have");
-  if (element === "intellectualRights") return orUpgrade("set rights, citation or licenseType (collectory_save_entity)", "writes it even when empty");
+  if (element === "citation" && /not expected/.test(message)) return renderer("writes the GBIF metadata in the wrong order");
+  if (element === "citation") return emptyIn63("set citation (collectory_save_entity)");
+  if (element === "rights" && path.includes("gbif")) return renderer("writes a rights element the GBIF profile does not have");
+  if (element === "intellectualRights") return emptyIn63("set rights, citation or licenseType (collectory_save_entity)");
   if (element === "electronicMailAddress")
     return path.includes("associatedParty")
       ? "the portal's own party has no email: set eml.electronicMailAddress in collectory's config"

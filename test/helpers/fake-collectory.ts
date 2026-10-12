@@ -125,6 +125,7 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
     // collectory 6.3.0 builds hubMembership from a cached hub list that hub edits never evict.
     state.hubCache ??= [...state.entities.values()].filter((h) => h["entity"] === "dataHub").map((h) => ({ uid: h["uid"], name: h["name"], members: ["memberDataResources", "memberInstitutions", "memberCollections"].flatMap((k) => (h[k] ? JSON.parse(h[k]) : [])) }));
     out["hubMembership"] = state.hubCache.filter((h) => h.members.includes(e["uid"])).map(({ uid, name }) => ({ uid, name }));
+    if (e["entity"] === "dataResource") out["alaPublicUrl"] = `${base}/public/show/${e["uid"]}`;
     if (e["entity"] === "dataProvider") out["dataResources"] = [...state.entities.values()].filter((d) => d["entity"] === "dataResource" && d["dataProvider"] === e["uid"]).map((d) => ({ uid: d["uid"], name: d["name"] }));
     if (e["entity"] === "dataResource" || e["entity"] === "dataProvider") {
       delete out["consumers"];

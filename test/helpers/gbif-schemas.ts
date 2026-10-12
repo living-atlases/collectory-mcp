@@ -5,7 +5,7 @@ import { loadSchemas, type Schemas } from "../../src/eml-check.ts";
 
 /**
  * The GBIF EML profile schemas, downloaded once from rs.gbif.org into node_modules/.cache (they carry no licence to
- * copy them into this repository). undefined when offline and not cached: the schema tests then skip.
+ * copy them into this repository). undefined when offline and not cached: the schema tests then skip (not in CI).
  */
 export const SCHEMA_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../node_modules/.cache/collectory-mcp/gbif-schema");
 const FILES = ["eml-gbif-profile/1.1/eml.xsd", "eml-gbif-profile/1.1/eml-gbif-profile.xsd", "eml-gbif-profile/1.1/dc.xsd", "xml.xsd"];
@@ -21,7 +21,8 @@ export async function cachedSchemaDir(): Promise<string | undefined> {
       writeFileSync(p, await res.text());
     }
     return SCHEMA_DIR;
-  } catch {
+  } catch (e) {
+    if (process.env["CI"]) throw new Error(`the GBIF EML profile schemas are needed in CI: ${(e as Error).message}`);
     return undefined;
   }
 }

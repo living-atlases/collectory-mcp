@@ -315,19 +315,24 @@ describe("collectory-mcp over MCP against a fake collectory 6.3.0", () => {
     const eml = (f: string, uid: string) => readFileSync(new URL(`./fixtures/eml/${f}`, import.meta.url), "utf8").replace(/dr1[023]\b/g, uid);
     const KEY_C = "aaaaaaaa-0000-0000-0000-000000000001";
     const KEY_I = "aaaaaaaa-0000-0000-0000-000000000002";
+    const KEY_O = "aaaaaaaa-0000-0000-0000-000000000003";
     fake.add("dataProvider", { uid: "dp9", name: "P9" });
     fake.add("dataResource", { uid: "dr50", name: "Box", resourceType: "records", dataProvider: "dp9", gbifRegistryKey: KEY_C });
     fake.add("dataResource", { uid: "dr51", name: "From an IPT", resourceType: "records", dataProvider: "dp9", guid: KEY_I });
     fake.add("dataResource", { uid: "dr52", name: "Lax hints", resourceType: "records" });
+    fake.add("dataResource", { uid: "dr53", name: "Repatriated", resourceType: "records", guid: KEY_O });
+    fake.state.emls.set("dr53", eml("6.3.0-bare.xml", "dr53"));
     fake.state.emls.set("dr50", eml("6.3.0-incomplete-bbox.xml", "dr50"));
     fake.state.emls.set("dr51", eml("6.3.0-bare.xml", "dr51"));
     fake.state.emls.set("dr52", { status: 500, body: "Error 500: expecting '}' or ',' but got current char 'c' ... groovy.json.JsonException" });
-    fake.state.gbif.set(KEY_C, { pubDate: "2026-01-01", installationKey: "inst-ala", document: eml("6.3.0-incomplete-bbox.xml", "dr50") });
+    fake.state.gbif.set(KEY_C, { pubDate: "2026-01-01", installationKey: "inst-ala", document: eml("6.3.0-incomplete-bbox.xml", "dr50").replaceAll("http://localhost:8080", fake.base) });
+    // another portal's dr53: same uid, another host
+    fake.state.gbif.set(KEY_O, { pubDate: "2026-01-01", installationKey: "inst-ala", document: eml("6.3.0-bare.xml", "dr53").replaceAll("http://localhost:8080", "https://other.example.org") });
     fake.state.gbif.set(KEY_I, { pubDate: "2026-01-01", installationKey: "inst-ipt", document: "<eml:eml><dataset><title>From an IPT</title></dataset></eml:eml>" });
     fake.state.gbifInstallations.set("inst-ala", { type: "HTTP_INSTALLATION", title: "Portal" });
     fake.state.gbifInstallations.set("inst-ipt", { type: "IPT_INSTALLATION", title: "Some IPT" });
     const { call } = await connect(fake);
-    const r = await call("collectory_eml_check", { dataProvider: "dp9", uids: ["dr52"] });
+    const r = await call("collectory_eml_check", { dataProvider: "dp9", uids: ["dr52", "dr53"] });
     assert.equal(r.isError, false, r.text);
     assert.match(r.json.schema, /GBIF EML profile 1\.1/);
     const by = Object.fromEntries(r.json.resources.map((x: any) => [x.uid, x]));
@@ -341,6 +346,7 @@ describe("collectory-mcp over MCP against a fake collectory 6.3.0", () => {
     assert.equal(by.dr52.valid, false);
     assert.match(by.dr52.problems[0].fix, /#310.*taxonomic hints/);
     assert.equal(by.dr52.gbif.source, "not-registered");
+    assert.equal(by.dr53.gbif.source, "other", "another portal's /public/show/dr53 is not this collectory's");
   });
 
   it("hub members: data resources through the web service, as a JSON string, with the resources to reindex", async () => {

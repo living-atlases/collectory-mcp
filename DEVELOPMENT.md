@@ -189,16 +189,19 @@ schema, which collectory itself declares:
 30. **5.1.1 never renders valid EML**, whatever the data: no `packageId`, a `rights` element the GBIF profile does not
     have, `citation` written even when empty, and empty `coverage`, `methods` and `intellectualRights` when the fields
     are empty. 6.3.0 fixes these (#318) and the 500 on non-strict taxonomic hints (#311); ALA's dr376, from a build in
-    between, still has `packageId` missing, two licence `ulink`s (near-duplicate licences 4.0/4.x and no
-    `licenseVersion`, #289), an empty `methods` and `citation` out of order.
+    between (whose OpenAPI document still says 5.1.1, so the fixes are told by the symptom, not by the version), has
+    `packageId` missing, two licence `ulink`s (near-duplicate licences 4.0/4.x matched by acronym, #289), an empty
+    `methods` and `citation` out of order.
 31. **6.3.0 (and develop) still render invalid EML** in two cases: `geographicDescription` with `westBoundingCoordinate`
     but not the other three coordinates opens an empty `coverage`; taxonomic hints without a range write an empty
     `generalTaxonomicCoverage`. Without a primary contact with a name, the resource contact is the portal's own
     organisation (the `eml.*` config) and GBIF's validator warns `RESOURCE_CONTACTS_MISSING_OR_INCOMPLETE`. The web
     service writes the bounding box, dates and methods, not `purpose` or the taxonomic hints (admin UI).
 32. **Whether GBIF's copy comes from collectory**: GBIF keeps the EML it last crawled (`dataset/{key}/document`) and
-    rewrites its `system` attribute, but keeps collectory's `{serverURL}/public/show/{uid}`, so finding it there means
-    the copy is collectory's (dr376); a dataset of an `IPT_INSTALLATION` takes its EML from the IPT (Flora d'Andorra).
+    rewrites its `system` attribute, but keeps collectory's `{serverURL}/public/show/{uid}` (the resource's
+    `alaPublicUrl`), so finding it there means the copy is collectory's (dr376); a dataset of an `IPT_INSTALLATION` takes
+    its EML from the IPT (Flora d'Andorra). The fixes were checked round trip: `collectory_save_entity` with the
+    coordinates and `methodStepDescription`, then the check again.
 
 What would make this safe by design: a JSON API for provider maps, licences, consumers and hub members accepting the
 same scope as the other writes; server-side validation of connection parameters; a dry-run mode for the IPT scan;

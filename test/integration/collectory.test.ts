@@ -327,11 +327,16 @@ describe("real collectory: writes with JWTs from the test issuer", { skip: (!URL
     if (major >= 6) assert.equal(b.valid, true, JSON.stringify(b.problems));
     else {
       assert.equal(b.valid, false);
-      assert.match(b.problems.find((p: any) => p.element === "eml").fix, /packageId: upgrade/);
+      assert.match(b.problems.find((p: any) => p.element === "eml").fix, /packageId, which collectory 6\.3\.0 fixed/);
       assert.match(r.json.collectory, /#303/);
     }
     // 6.3.0 leaves coverage empty, 5.1.1 writes the missing coordinates empty
     assert.ok(x.problems.some((p: any) => p.severity === "error" && p.element.startsWith("dataset/coverage") && /bounding coordinates/.test(p.fix)), JSON.stringify(x.problems));
+    // the fix it gives, through the MCP, then checked again
+    const fix = await m2m("collectory_save_entity", { uid: box, fields: { eastBoundingCoordinate: "10", northBoundingCoordinate: "10", southBoundingCoordinate: "-10", methodStepDescription: "M" }, dryRun: false, confirm: true });
+    assert.equal(fix.isError, false, fix.text);
+    const again = (await m2m("collectory_eml_check", { uids: [box] })).json.resources[0];
+    assert.ok(!again.problems.some((p: any) => p.element.startsWith("dataset/coverage") || p.element === "dataset/methods"), JSON.stringify(again.problems));
   });
 
   it("GBIF: preview compares with the real GBIF API; repatriation search and organisations read GBIF through collectory", async () => {
