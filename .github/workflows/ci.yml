@@ -64,7 +64,7 @@ jobs:
       - run: npm ci
       - id: demo
         run: |
-          if curl -fsS -m 30 https://collections.l-a.site/ws/dataHub >/dev/null; then echo "up=true" >> "$GITHUB_OUTPUT"; else echo "up=false" >> "$GITHUB_OUTPUT"; echo "::notice::collections.l-a.site is not available: skipped"; fi
+          if curl -fsS -m 30 -H "Accept: application/json" https://collections.l-a.site/ws/dataHub | grep -q "^\s*\["; then echo "up=true" >> "$GITHUB_OUTPUT"; else echo "up=false" >> "$GITHUB_OUTPUT"; echo "::notice::collections.l-a.site is not available: skipped"; fi
       - if: steps.demo.outputs.up == 'true'
         run: npm run test:integration
         env:
