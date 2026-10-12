@@ -37,6 +37,9 @@ It works like its siblings [spatial-mcp](https://github.com/living-atlases/spati
   what refers to an entity before deleting it.
 - **Licences**: add or update the licences resources can choose, refusing near-duplicates (3.0 vs 3.x), and refuse to
   delete one that resources still use.
+- **Check the EML** collectory publishes for each data resource against the GBIF EML profile, as GBIF does, with what
+  fixes each problem (a field, the portal's config, or upgrading collectory), and whether GBIF's copy of the metadata
+  comes from collectory or from an IPT.
 - **Find problems**: resources without licence (or with one outside the vocabulary) or unique key terms, broken
   website URLs, hub members that no longer exist, ambiguous code mappings (including those that match any collection
   code, and provider maps without a collection left in old databases), collections nothing maps to.
@@ -102,6 +105,7 @@ COLLECTORY_URL=https://collections.example.org COLLECTORY_USERNAME=you@example.o
 | `COLLECTORY_USERNAME` | person for the admin pages (password from `set-password`) |
 | `COLLECTORY_BIOCACHE_URL` | biocache-service of the portal (e.g. `https://biocache-ws.ala.org.au/ws`), to read the codes in the indexed records (as of their last processing) for the mapping check; without it the codes come from GBIF for datasets registered there |
 | `COLLECTORY_GBIF_API` | GBIF API used for previews (default `https://api.gbif.org/v1`) |
+| `COLLECTORY_GBIF_SCHEMA_URL` | where the GBIF EML profile schemas are read from (default `https://rs.gbif.org/schema`) |
 
 ## Things to ask
 

@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<eml:eml xmlns:d="eml://ecoinformatics.org/dataset-2.1.0" xmlns:eml="eml://ecoinformatics.org/eml-2.1.1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:dc="http://purl.org/dc/terms/" xsi:schemaLocation="eml://ecoinformatics.org/eml-2.1.1 http://rs.gbif.org/schema/eml-gbif-profile/1.1/eml-gbif-profile.xsd" system="ALA-Registry" scope="system" xml:lang="en">
+  <dataset>
+    <alternateIdentifier>60147dbf-f098-3cc3-9b85-e7c198193460</alternateIdentifier>
+    <alternateIdentifier>10.15468/rhzrxw</alternateIdentifier>
+    <alternateIdentifier>4ce8e3f9-2546-4af1-b28d-e2eadf05dfd4</alternateIdentifier>
+    <alternateIdentifier>https://collections.ala.org.au/public/show/dr376</alternateIdentifier>
+    <title xmlns:lang="en">National Herbarium of Victoria (MEL) AVH data</title>
+    <creator>
+      <organizationName>Australia's Virtual Herbarium</organizationName>
+    </creator>
+    <metadataProvider>
+      <organizationName>Australia's Virtual Herbarium</organizationName>
+    </metadataProvider>
+    <associatedParty>
+      <organizationName>Atlas of Living Australia</organizationName>
+      <address>
+        <deliveryPoint>CSIRO Ecosystems Services</deliveryPoint>
+        <city>Canberra</city>
+        <administrativeArea>ACT</administrativeArea>
+        <postalCode>2601</postalCode>
+        <country>Australia</country>
+      </address>
+      <electronicMailAddress>info@ala.org.au</electronicMailAddress>
+      <role>distributor</role>
+    </associatedParty>
+    <associatedParty>
+      <organizationName>National Herbarium of Victoria</organizationName>
+      <address />
+      <role>originator</role>
+    </associatedParty>
+    <pubDate>2026-07-15</pubDate>
+    <language>English</language>
+    <abstract>
+      <para>Data for the Australasian Virtual Herbarium (AVH) from the National Herbarium of Victoria (MEL)</para>
+    </abstract>
+    <intellectualRights>
+      <para>This work is licensed under a Creative Commons Attribution (CC-BY) 4.0 License. 
+        <ulink url="https://creativecommons.org/licenses/by/4.0/">
+          <citetitle>Creative Commons Attribution (International) (CC-BY 4.0 (Int) 4.0)</citetitle>
+        </ulink> 
+        <ulink url="https://creativecommons.org/licenses/by/4.0/">
+          <citetitle>Creative Commons Attribution (International) (CC-BY 4.0 (Int) 4.x)</citetitle>
+        </ulink>
+      </para>
+    </intellectualRights>
+    <distribution>
+      <online>
+        <url function="information">https://collections.ala.org.au/public/show/dr376</url>
+      </online>
+    </distribution>
+    <coverage>
+      <geographicCoverage>
+        <geographicDescription>The data set contains records of herbarium specimens from all over the world, but with a focus on Australia.</geographicDescription>
+        <boundingCoordinates>
+          <westBoundingCoordinate>-180</westBoundingCoordinate>
+          <eastBoundingCoordinate>180</eastBoundingCoordinate>
+          <northBoundingCoordinate>90</northBoundingCoordinate>
+          <southBoundingCoordinate>-90</southBoundingCoordinate>
+        </boundingCoordinates>
+      </geographicCoverage>
+    </coverage>
+    <purpose>
+      <para></para>
+    </purpose>
+    <contact>
+      <individualName>
+        <givenName>Niels</givenName>
+        <surName>Klazenga</surName>
+      </individualName>
+      <positionName>editor</positionName>
+      <electronicMailAddress>niels.klazenga@rbg.vic.gov.au</electronicMailAddress>
+    </contact>
+    <methods />
+  </dataset>
+  <additionalMetadata>
+    <metadata>
+      <gbif>
+        <dateStamp>2026-07-15T05:48:10</dateStamp>
+        <hierarchyLevel>dataset</hierarchyLevel>
+        <resourceLogoUrl>https://collections.ala.org.au/data/dataResource/avh_logo_green_transparent.png</resourceLogoUrl>
+        <citation></citation>
+        <rights>This work is licensed under a Creative Commons Attribution (CC-BY) 4.0 License.</rights>
+      </gbif>
+    </metadata>
+  </additionalMetadata>
+</eml:eml>

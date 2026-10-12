@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -10,6 +11,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeZip } from "../src/zip.ts";
+import { cachedSchemaDir } from "./helpers/gbif-schemas.ts";
 import { ADMIN_LOGIN, startFakeCollectory, USER_LOGIN } from "./helpers/fake-collectory.ts";
 
 type Fake = Awaited<ReturnType<typeof startFakeCollectory>>;
@@ -17,7 +19,7 @@ type Fake = Awaited<ReturnType<typeof startFakeCollectory>>;
 async function connect(fake: Fake, o: { token?: string; login?: boolean | typeof USER_LOGIN; readonly?: boolean; secrets?: string[]; index?: boolean; remote?: boolean } = {}) {
   const account = o.login === true ? ADMIN_LOGIN : o.login || undefined;
   const client = new CollectoryClient(fake.base, { auth: o.token ? staticToken(o.token) : noAuth, session: account ? new WebSession(account.username, account.password) : undefined });
-  const server = createServer({ client, config: { readonly: !!o.readonly, gbifApi: `${fake.base}/gbif/v1`, biocacheApi: o.index ? `${fake.base}/biocache` : undefined }, localFiles: !o.remote, secrets: o.secrets ?? [ADMIN_LOGIN.password, o.token] });
+  const server = createServer({ client, config: { readonly: !!o.readonly, gbifApi: `${fake.base}/gbif/v1`, biocacheApi: o.index ? `${fake.base}/biocache` : undefined, gbifSchemaUrl: `${fake.base}/schema` }, localFiles: !o.remote, secrets: o.secrets ?? [ADMIN_LOGIN.password, o.token] });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await server.connect(a);
   const mcp = new Client({ name: "test", version: "0" });
@@ -305,6 +307,40 @@ describe("collectory-mcp over MCP against a fake collectory 6.3.0", () => {
       const r = await remote.call("collectory_upload_data_file", { uid: "dr7", file: zip });
       assert.equal(r.isError, true);
     });
+  });
+
+  it("EML check: schema errors with their fix, the #310 failure, and where GBIF's metadata comes from", async (t) => {
+    fake.state.schemaDir = await cachedSchemaDir();
+    if (!fake.state.schemaDir) return t.skip("the GBIF EML profile schemas could not be downloaded");
+    const eml = (f: string, uid: string) => readFileSync(new URL(`./fixtures/eml/${f}`, import.meta.url), "utf8").replace(/dr1[023]\b/g, uid);
+    const KEY_C = "aaaaaaaa-0000-0000-0000-000000000001";
+    const KEY_I = "aaaaaaaa-0000-0000-0000-000000000002";
+    fake.add("dataProvider", { uid: "dp9", name: "P9" });
+    fake.add("dataResource", { uid: "dr50", name: "Box", resourceType: "records", dataProvider: "dp9", gbifRegistryKey: KEY_C });
+    fake.add("dataResource", { uid: "dr51", name: "From an IPT", resourceType: "records", dataProvider: "dp9", guid: KEY_I });
+    fake.add("dataResource", { uid: "dr52", name: "Lax hints", resourceType: "records" });
+    fake.state.emls.set("dr50", eml("6.3.0-incomplete-bbox.xml", "dr50"));
+    fake.state.emls.set("dr51", eml("6.3.0-bare.xml", "dr51"));
+    fake.state.emls.set("dr52", { status: 500, body: "Error 500: expecting '}' or ',' but got current char 'c' ... groovy.json.JsonException" });
+    fake.state.gbif.set(KEY_C, { pubDate: "2026-01-01", installationKey: "inst-ala", document: eml("6.3.0-incomplete-bbox.xml", "dr50") });
+    fake.state.gbif.set(KEY_I, { pubDate: "2026-01-01", installationKey: "inst-ipt", document: "<eml:eml><dataset><title>From an IPT</title></dataset></eml:eml>" });
+    fake.state.gbifInstallations.set("inst-ala", { type: "HTTP_INSTALLATION", title: "Portal" });
+    fake.state.gbifInstallations.set("inst-ipt", { type: "IPT_INSTALLATION", title: "Some IPT" });
+    const { call } = await connect(fake);
+    const r = await call("collectory_eml_check", { dataProvider: "dp9", uids: ["dr52"] });
+    assert.equal(r.isError, false, r.text);
+    assert.match(r.json.schema, /GBIF EML profile 1\.1/);
+    const by = Object.fromEntries(r.json.resources.map((x: any) => [x.uid, x]));
+    assert.equal(by.dr50.valid, false);
+    assert.deepEqual(by.dr50.problems.filter((p: any) => p.severity === "error").map((p: any) => p.element), ["dataset/coverage"]);
+    assert.match(by.dr50.problems[0].fix, /all four bounding coordinates/);
+    assert.equal(by.dr50.gbif.source, "collectory", JSON.stringify(by.dr50.gbif));
+    assert.equal(by.dr51.valid, true);
+    assert.equal(by.dr51.gbif.source, "ipt", JSON.stringify(by.dr51.gbif));
+    assert.match(by.dr51.gbif.note, /Some IPT/);
+    assert.equal(by.dr52.valid, false);
+    assert.match(by.dr52.problems[0].fix, /#310.*taxonomic hints/);
+    assert.equal(by.dr52.gbif.source, "not-registered");
   });
 
   it("hub members: data resources through the web service, as a JSON string, with the resources to reindex", async () => {

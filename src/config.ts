@@ -44,6 +44,8 @@ export interface Config {
   gbifApi: string;
   /** biocache-service of the portal's index (pipelines), for the codes in the data. */
   biocacheApi?: string;
+  /** Where the GBIF EML profile schemas are read from (rs.gbif.org). */
+  gbifSchemaUrl?: string;
   timeoutMs: number;
 }
 
@@ -77,6 +79,7 @@ export function loadConfig(argv: string[] = process.argv.slice(2), env: NodeJS.P
     tokenStore: oneOf(env, "COLLECTORY_TOKEN_STORE", ["auto", "keyring", "file"] as const, "auto"),
     gbifApi: (env["COLLECTORY_GBIF_API"] ?? "https://api.gbif.org/v1").replace(/\/+$/, ""),
     biocacheApi: env["COLLECTORY_BIOCACHE_URL"]?.replace(/\/+$/, "") || undefined,
+    gbifSchemaUrl: (env["COLLECTORY_GBIF_SCHEMA_URL"] ?? "https://rs.gbif.org/schema").replace(/\/+$/, ""),
     timeoutMs: Number(env["COLLECTORY_TIMEOUT_MS"] ?? 120_000),
   };
 }

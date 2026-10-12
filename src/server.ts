@@ -4,6 +4,7 @@ import { nonInteractive } from "./auth.ts";
 import { CollectoryClient, CollectoryError, ENTITIES, entityOf } from "./collectory-client.ts";
 import type { Config } from "./config.ts";
 import { Redactor } from "./redact.ts";
+import { EmlCheck } from "./eml-check.ts";
 import { MappingCheck } from "./mapping-check.ts";
 import { DataUpload } from "./upload.ts";
 import { Workflows } from "./workflows.ts";
@@ -39,7 +40,7 @@ type ToolResult = { isError?: boolean; content: Array<{ type: "text"; text: stri
 
 export interface ServerDeps {
   client: CollectoryClient;
-  config: Pick<Config, "readonly" | "gbifApi" | "biocacheApi">;
+  config: Pick<Config, "readonly" | "gbifApi" | "biocacheApi" | "gbifSchemaUrl">;
   secrets?: Array<string | undefined>;
   /** Tools that read local files (data uploads): only where the server runs on the user's machine (stdio). */
   localFiles?: boolean;
@@ -140,6 +141,22 @@ export function createServer(deps: ServerDeps): McpServer {
       const out = [];
       for (const u of [...new Set(uids)]) out.push(await mappings.check(u).catch((e: Error) => ({ uid: u, error: e.message })));
       return { resources: out };
+    },
+  );
+
+  tool(
+    "collectory_eml_check",
+    "read",
+    "Check the EML collectory publishes for data resources (/ws/eml/{uid}) as GBIF does: against the GBIF EML profile schema, plus the resource contact. Each problem says what fixes it (a field, collectory's config, or a newer collectory, #303), and whether GBIF's copy of the metadata comes from this collectory or from an IPT",
+    { uids: z.array(uid("dr")).max(50).optional(), dataProvider: uid("dp").optional().describe("Check every data resource of this provider (at most 50)") },
+    async (a) => {
+      let uids = a.uids ?? [];
+      if (a.dataProvider) uids = [...uids, ...((await client.get<Record<string, unknown>>(a.dataProvider, "dataProvider"))["dataResources"] as Array<{ uid: string }> ?? []).map((d) => d.uid)].slice(0, 50);
+      if (!uids.length) throw new Error("give uids or a dataProvider");
+      const emls = new EmlCheck(client, config.gbifApi, config.gbifSchemaUrl ?? "https://rs.gbif.org/schema");
+      const out = [];
+      for (const u of [...new Set(uids)]) out.push(await emls.check(u).catch((e: Error) => ({ uid: u, error: e.message })));
+      return { ...(await emls.about()), resources: out };
     },
   );
 

@@ -5,7 +5,10 @@ import { loadConfig, secretsOf } from "../src/config.ts";
 import { checkConnectionParameters, planEntityWrite, same } from "../src/entities.ts";
 import { FormContractError, fill, findForm, pageMessages } from "../src/forms.ts";
 import { Redactor } from "../src/redact.ts";
+import { checkEml, type Context } from "../src/eml-check.ts";
 import { parseEml, parseMeta } from "../src/upload.ts";
+import { readFileSync } from "node:fs";
+import { cachedSchemas } from "./helpers/gbif-schemas.ts";
 import { readZip, writeZip } from "../src/zip.ts";
 import { authFor } from "../src/stdio.ts";
 import { overlap, parseIptRss } from "../src/workflows.ts";
@@ -130,6 +133,8 @@ describe("config and secrets", () => {
     assert.deepEqual(secretsOf(c).filter(Boolean), ["tok123", "pw1234"]);
     assert.throws(() => loadConfig([], { COLLECTORY_OIDC_CLIENT_ID: "x" }), /COLLECTORY_OIDC_ISSUER/);
     assert.throws(() => loadConfig([], { COLLECTORY_TOKEN_STORE: "disk" }), /must be one of/);
+    assert.equal(loadConfig([], {}).gbifSchemaUrl, "https://rs.gbif.org/schema");
+    assert.equal(loadConfig([], { COLLECTORY_GBIF_SCHEMA_URL: "https://mirror.example.org/schema/" }).gbifSchemaUrl, "https://mirror.example.org/schema");
   });
 
   it("picks the credentials in order: token, OIDC, API key, none", () => {
@@ -195,3 +200,55 @@ describe("zip and Darwin Core Archive parsing", () => {
   });
 });
 
+
+describe("EML check against the GBIF EML profile (real collectory output)", async () => {
+  const schemas = await cachedSchemas();
+  const skip = !schemas && "the GBIF EML profile schemas could not be downloaded";
+  const fixture = (f: string) => readFileSync(new URL(`./fixtures/eml/${f}`, import.meta.url), "utf8");
+  const at = (v: string, o: Partial<Context> = {}): Context => ({ uid: "dr1", major: Number(v.split(".")[0]), minor: Number(v.split(".")[1]), ...o });
+  const byElement = (ps: Array<{ element?: string; severity: string }>) => ps.filter((p) => p.severity === "error").map((p) => p.element);
+
+  it("ALA's dr376 (a 6.3.0 pre-release): the #303 errors, each with its fix", { skip }, async () => {
+    const r = await checkEml(fixture("ala-dr376.xml"), schemas, at("6.2", { uid: "dr376", licenseType: "CC-BY 4.0 (Int)" }));
+    assert.equal(r.valid, false);
+    assert.deepEqual(byElement(r.problems), ["eml", "dataset/intellectualRights/para/ulink", "dataset/methods", "additionalMetadata/metadata/gbif/citation"]);
+    const fix = (e: string) => r.problems.find((p) => p.element === e)!.fix;
+    assert.match(fix("eml"), /packageId: upgrade/);
+    assert.match(fix("dataset/intellectualRights/para/ulink"), /no licenseVersion: any version matches.*set licenseVersion.*#289/);
+    assert.match(fix("dataset/methods"), /methodStepDescription.*or upgrade/);
+    assert.match(fix("additionalMetadata/metadata/gbif/citation"), /wrong order: upgrade/);
+    assert.ok(!r.problems.some((p) => p.severity === "warning"), "its contact has a name");
+  });
+
+  it("6.3.0: a bare resource is valid; the contact warning and the empty abstract are reported", { skip }, async () => {
+    const r = await checkEml(fixture("6.3.0-bare.xml"), schemas, at("6.3"));
+    assert.equal(r.valid, true);
+    assert.deepEqual(r.problems.map((p) => [p.severity, p.element]), [["warning", "dataset/contact"], ["info", "dataset/abstract"]]);
+    assert.deepEqual(schemas!.changed, [], "rs.gbif.org still serves the schemas this was tested with");
+  });
+
+  it("6.3.0: an incomplete bounding box and taxonomic hints without a range still give invalid EML", { skip }, async () => {
+    const box = await checkEml(fixture("6.3.0-incomplete-bbox.xml"), schemas, at("6.3"));
+    assert.deepEqual(byElement(box.problems), ["dataset/coverage"]);
+    assert.match(box.problems[0]!.fix, /all four bounding coordinates/);
+    assert.doesNotMatch(box.problems[0]!.fix, /upgrade/);
+    const tax = await checkEml(fixture("6.3.0-taxonomy-hints.xml"), schemas, at("6.3"));
+    assert.deepEqual(byElement(tax.problems), ["dataset/coverage/taxonomicCoverage/generalTaxonomicCoverage"], "minLength and pattern: one problem");
+    assert.match(tax.problems[0]!.fix, /no range: add one in the admin UI/);
+  });
+
+  it("5.1.1: invalid whatever the data; the portal's own email comes from the config", { skip }, async () => {
+    const r = await checkEml(fixture("5.1.1-bare.xml"), schemas, at("5.1"));
+    const errs = r.problems.filter((p) => p.severity === "error");
+    assert.ok(errs.some((p) => p.element === "eml" && /upgrade/.test(p.fix)));
+    assert.match(errs.find((p) => p.element === "dataset/associatedParty/electronicMailAddress")!.fix, /portal's own party has no email: set eml\.electronicMailAddress/);
+    assert.match(errs.find((p) => p.element === "dataset/contact/electronicMailAddress")!.fix, /primary contact's email/);
+    assert.match(errs.find((p) => p.element === "additionalMetadata/metadata/gbif/rights")!.fix, /does not have: upgrade/);
+  });
+
+  it("without the schemas only the other checks run", async () => {
+    const r = await checkEml(fixture("6.3.0-bare.xml"), undefined, at("6.3"));
+    assert.equal(r.valid, null);
+    assert.equal(r.problems.length, 2);
+  });
+});

@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<eml:eml xmlns:d="eml://ecoinformatics.org/dataset-2.1.0" xmlns:eml="eml://ecoinformatics.org/eml-2.1.1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:dc="http://purl.org/dc/terms/" xsi:schemaLocation="eml://ecoinformatics.org/eml-2.1.1 http://rs.gbif.org/schema/eml-gbif-profile/1.1/eml-gbif-profile.xsd" system="ALA-Registry" scope="system" xml:lang="en">
+  <dataset>
+    <alternateIdentifier>96e6b15c-b9aa-31f2-b28f-e333e08d19ea</alternateIdentifier>
+    <alternateIdentifier>http://localhost:8080/public/show/dr0</alternateIdentifier>
+    <title xmlns:lang="en">eml bare</title>
+    <creator>
+      <organizationName>eml bare</organizationName>
+    </creator>
+    <metadataProvider>
+      <organizationName>eml bare</organizationName>
+    </metadataProvider>
+    <associatedParty>
+      <organizationName>Atlas of Living Australia</organizationName>
+      <address>
+        <deliveryPoint>CSIRO Ecosystems Services</deliveryPoint>
+        <city>Canberra</city>
+        <administrativeArea>ACT</administrativeArea>
+        <postalCode>2601</postalCode>
+        <country>Australia</country>
+      </address>
+      <electronicMailAddress />
+      <role>distributor</role>
+    </associatedParty>
+    <pubDate>2026-10-12</pubDate>
+    <language>English</language>
+    <abstract>
+      <para></para>
+    </abstract>
+    <intellectualRights />
+    <distribution>
+      <online>
+        <url function="information">http://localhost:8080/public/show/dr0</url>
+      </online>
+    </distribution>
+    <coverage />
+    <purpose>
+      <para></para>
+    </purpose>
+    <contact>
+      <organizationName>Atlas of Living Australia</organizationName>
+      <address>
+        <deliveryPoint>CSIRO Ecosystems Services</deliveryPoint>
+        <city>Canberra</city>
+        <administrativeArea>ACT</administrativeArea>
+        <postalCode>2601</postalCode>
+        <country>Australia</country>
+      </address>
+      <electronicMailAddress />
+    </contact>
+    <methods />
+  </dataset>
+  <additionalMetadata>
+    <metadata>
+      <gbif>
+        <dateStamp>2026-10-12T11:14:48</dateStamp>
+        <hierarchyLevel>dataset</hierarchyLevel>
+        <citation></citation>
+        <rights></rights>
+      </gbif>
+    </metadata>
+  </additionalMetadata>
+</eml:eml>

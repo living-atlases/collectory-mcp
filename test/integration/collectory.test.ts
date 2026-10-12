@@ -316,6 +316,24 @@ describe("real collectory: writes with JWTs from the test issuer", { skip: (!URL
     else assert.equal(after.pubDescription, "before", "5.x sets only the fields the EML has");
   });
 
+  it("EML check: the EML collectory renders, against the GBIF EML profile from rs.gbif.org", async () => {
+    const bare = await create("dataResource", { name: `mcp-it eml ${stamp}`, resourceType: "records" });
+    const box = await create("dataResource", { name: `mcp-it eml box ${stamp}`, resourceType: "records", geographicDescription: "G", westBoundingCoordinate: "-10" });
+    const r = await m2m("collectory_eml_check", { uids: [bare, box] });
+    assert.equal(r.isError, false, r.text);
+    const [b, x] = r.json.resources;
+    assert.equal(b.gbif.source, "not-registered", JSON.stringify(b));
+    assert.ok(b.problems.some((p: any) => p.severity === "warning" && p.element === "dataset/contact"), JSON.stringify(b.problems));
+    if (major >= 6) assert.equal(b.valid, true, JSON.stringify(b.problems));
+    else {
+      assert.equal(b.valid, false);
+      assert.match(b.problems.find((p: any) => p.element === "eml").fix, /packageId: upgrade/);
+      assert.match(r.json.collectory, /#303/);
+    }
+    // 6.3.0 leaves coverage empty, 5.1.1 writes the missing coordinates empty
+    assert.ok(x.problems.some((p: any) => p.severity === "error" && p.element.startsWith("dataset/coverage") && /bounding coordinates/.test(p.fix)), JSON.stringify(x.problems));
+  });
+
   it("GBIF: preview compares with the real GBIF API; repatriation search and organisations read GBIF through collectory", async () => {
     const dp = await create("dataProvider", { name: `mcp-it GBIF ${stamp}` });
     await create("dataResource", { name: `mcp-it Flora d'Andorra ${stamp}`, resourceType: "records", dataProvider: { uid: dp }, guid: "a8adde1c-1d66-4ad0-846f-cdf59fc4cb0f" });

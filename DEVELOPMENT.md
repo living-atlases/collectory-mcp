@@ -46,6 +46,7 @@ MCP client ──stdio or Streamable HTTP──▶ collectory-mcp ──HTTP─�
 | `collectory_list`, `collectory_get`, `collectory_count` | `/ws/{entity}`, `/ws/{entity}/{uid}`, `POST /ws/find/{entity}`, `/ws/{entity}/count` | read |
 | `collectory_lookup_codes`, `collectory_code_map` | `/ws/lookup/inst/{i}/coll/{c}`; every collection's `recordsProviderMapping` (`POST /ws/find/collection`) plus, with a login, `/providerMap/list` and `show` for maps without a collection | read |
 | `collectory_mapping_check` | the resource, `/ws/lookup`; codes from biocache-service `/occurrences/search` facets (`COLLECTORY_BIOCACHE_URL`) or GBIF `occurrence/search` facets by dataset | read |
+| `collectory_eml_check` | `/ws/eml/{uid}`, validated with the GBIF EML profile 1.1 schemas (read from rs.gbif.org, xmllint compiled to WebAssembly); GBIF API `dataset/{key}`, `dataset/{key}/document`, `installation/{key}` | read |
 | `collectory_contacts`, `collectory_licences` | with a login `/{entity}/edit/{uid}?page=/shared/showContacts`, `/ws/contacts/{id}` and the `editRole` forms (every contact); without, `/ws/{entity}/{uid}/contacts` (published ones only, #193); `/ws/licence` | read |
 | `collectory_audit` | the above, over the whole registry | read |
 | `collectory_save_entity` | `POST /ws/{entity}[/{uid}]` | write, dry run by default |
@@ -182,6 +183,23 @@ Upload-data, #207, #208, #307):
     verified through it cannot see an unpublished contact. With a login the tools read the entity's contacts admin page
     instead, with `/ws/contacts/{id}` and each link's `editRole` form.
 
+The EML collectory publishes (`/ws/eml/{uid}`, `EmlRenderService`; #303, #310), checked with the GBIF EML profile 1.1
+schema, which collectory itself declares:
+
+30. **5.1.1 never renders valid EML**, whatever the data: no `packageId`, a `rights` element the GBIF profile does not
+    have, `citation` written even when empty, and empty `coverage`, `methods` and `intellectualRights` when the fields
+    are empty. 6.3.0 fixes these (#318) and the 500 on non-strict taxonomic hints (#311); ALA's dr376, from a build in
+    between, still has `packageId` missing, two licence `ulink`s (near-duplicate licences 4.0/4.x and no
+    `licenseVersion`, #289), an empty `methods` and `citation` out of order.
+31. **6.3.0 (and develop) still render invalid EML** in two cases: `geographicDescription` with `westBoundingCoordinate`
+    but not the other three coordinates opens an empty `coverage`; taxonomic hints without a range write an empty
+    `generalTaxonomicCoverage`. Without a primary contact with a name, the resource contact is the portal's own
+    organisation (the `eml.*` config) and GBIF's validator warns `RESOURCE_CONTACTS_MISSING_OR_INCOMPLETE`. The web
+    service writes the bounding box, dates and methods, not `purpose` or the taxonomic hints (admin UI).
+32. **Whether GBIF's copy comes from collectory**: GBIF keeps the EML it last crawled (`dataset/{key}/document`) and
+    rewrites its `system` attribute, but keeps collectory's `{serverURL}/public/show/{uid}`, so finding it there means
+    the copy is collectory's (dr376); a dataset of an `IPT_INSTALLATION` takes its EML from the IPT (Flora d'Andorra).
+
 What would make this safe by design: a JSON API for provider maps, licences, consumers and hub members accepting the
 same scope as the other writes; server-side validation of connection parameters; a dry-run mode for the IPT scan;
 POST (with CSRF protection) for the GBIF actions; the GBIF password out of the review page; an upload that keeps the
@@ -196,10 +214,10 @@ transport already gives the "nothing to install" option. The findings above are 
 
 | Suite | Runs against | What it pins |
 |---|---|---|
-| `test/units.test.ts` | — | field rules, connection parameter checks, form parsing and fail-closed filling, CSV and IPT RSS parsing, config, redaction |
+| `test/units.test.ts` | — | the EML check on real collectory output (`test/fixtures/eml`: 5.1.1, 6.3.0, ALA's dr376), field rules, connection parameter checks, form parsing and fail-closed filling, CSV and IPT RSS parsing, config, redaction |
 | `test/mcp-e2e.test.ts` | fake collectory 6.3.0 (`test/helpers/fake-collectory.ts`) | every workflow over MCP: previews write nothing, merges keep data, conflicts and hidden URLs are refused, form lane with a session, machine token refused on forms, repatriation posts only the chosen rows, secrets masked, 6.0.0 fallback |
 | `test/stdio.test.ts` | fake collectory | the server as an MCP client starts it |
-| `test/integration/collectory.test.ts` | a real collectory | anonymous: version, refusal; with JWTs from the test issuer and a person's login: create/update, code mapping + lookup + conflict, connection parameters (admin vs editor), hub members by web service and by form (machine and user tokens refused there), record consumers, contacts (an unpublished one seen only with a login), delete with dependencies, data file upload (parameters kept, contacts per version), IPT preview and scan (with and without create), GBIF preview, repatriation search, GBIF organisations, licences (create, update, near-duplicate, delete), audit |
+| `test/integration/collectory.test.ts` | a real collectory | anonymous: version, refusal; with JWTs from the test issuer and a person's login: create/update, code mapping + lookup + conflict, connection parameters (admin vs editor), hub members by web service and by form (machine and user tokens refused there), record consumers, contacts (an unpublished one seen only with a login), delete with dependencies, data file upload (parameters kept, contacts per version), IPT preview and scan (with and without create), GBIF preview, repatriation search, GBIF organisations, licences (create, update, near-duplicate, delete), EML check, audit |
 
 The fake implements the behaviour taken from the 6.3.0 code (CrudService, PermissionInterceptor, the GSP field names).
 The guards were mutation-checked: disabling each of the hidden-url refusal, the code merge, the conflict check, the
@@ -213,8 +231,10 @@ a collection (refused when they cannot be read), the lookup that resolves to an 
 notify, email case, and update preview, and the mapping check verdicts (reprocess vs missing mapping, real pairs, the
 default collectionCode suggestion, consumers, a lookup cache per call), the full contact listing with a login, and
 the upload's stored parameters sent back, unknown parameters, unique key change, key terms missing from the file,
-contact removal refusal, restore refused with an EML, contact restore, and cleared EML fields makes at least one test
-fail.
+contact removal refusal, restore refused with an EML, contact restore, and cleared EML fields, and the EML check's
+local schema imports, schema hash comparison, duplicate-message merge, element paths, the fixes that depend on the
+collectory version and on the party, the #310 diagnosis, the contact warning and the GBIF source (collectory
+fingerprint, IPT) makes at least one test fail.
 
 ### Integration harness
 
@@ -240,9 +260,11 @@ roles), and its authorize/token/userinfo endpoints give the browser-like login t
 
 MPL-2.0. collectory is MPL-1.1 (its `LICENSE.txt`), which allows use under later versions, so MPL-2.0 keeps this
 compatible and open to contributing parts upstream. `src/auth.ts`, `web-session.ts`, `token-store.ts` and `redact.ts`
-come from spatial-mcp (MPL-2.0). Dependencies are MIT.
+come from spatial-mcp (MPL-2.0). Dependencies are MIT (`xmllint-wasm` is libxml2, MIT). The GBIF EML profile schemas
+carry no licence, so they are not copied here: the server and the tests download them from rs.gbif.org (the tests into
+`node_modules/.cache`) and compare them with the SHA-256 they were tested with.
 
 ## Not covered yet
 
 Creating ProviderMaps of an institution without a collection (fresh schemas refuse them), taxonomy hints, images and
-logos, EML validation, attributions, temp data resources (sandbox), the OIDC browser login of spatial-mcp.
+logos, attributions, temp data resources (sandbox), the OIDC browser login of spatial-mcp.

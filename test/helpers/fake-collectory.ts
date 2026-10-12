@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { readZip } from "../../src/zip.ts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -43,7 +45,12 @@ export interface FakeState {
   gbifOccurrences: Array<{ datasetKey: string; institutionCode?: string; collectionCode?: string; count: number }>;
   legacyMaps: Array<{ id: number; institution: string; institutionCodes: string[]; collectionCodes: string[]; matchAnyCollectionCode: boolean }>;
   ipt: Array<{ title: string; link: string; description: string; pubDate: string; dwca: string; guid: string }>;
-  gbif: Map<string, { pubDate: string }>;
+  gbif: Map<string, { pubDate: string; installationKey?: string; document?: string }>;
+  gbifInstallations: Map<string, { type: string; title: string }>;
+  /** /ws/eml/{uid}: the document, or an error. */
+  emls: Map<string, string | { status: number; body: string }>;
+  /** Directory the GBIF schemas are served from (/schema/...), like rs.gbif.org. */
+  schemaDir?: string;
   loads: Map<string, { names: string[]; polls: number }>;
   /** Every request: method, path, auth kind. */
   requests: Array<{ method: string; path: string; auth: string; body?: string }>;
@@ -74,7 +81,7 @@ const WRITABLE: Record<string, string[]> = {
 };
 
 export async function startFakeCollectory(opts: FakeOptions = {}) {
-  const state: FakeState = { entities: new Map(), contacts: new Map(), links: [], providerMaps: new Map(), legacyMaps: [], index: [], gbifOccurrences: [], ipt: [], gbif: new Map(), loads: new Map(), licences: new Map([[1, { name: "Creative Commons Attribution", acronym: "CC-BY", licenceVersion: "4.0", url: "https://creativecommons.org/licenses/by/4.0/", version: 0 }]]), requests: [], counters: { in: 0, co: 0, dp: 0, dr: 0, dh: 0, contact: 0 } };
+  const state: FakeState = { entities: new Map(), contacts: new Map(), links: [], providerMaps: new Map(), legacyMaps: [], index: [], gbifOccurrences: [], ipt: [], gbif: new Map(), gbifInstallations: new Map(), emls: new Map(), loads: new Map(), licences: new Map([[1, { name: "Creative Commons Attribution", acronym: "CC-BY", licenceVersion: "4.0", url: "https://creativecommons.org/licenses/by/4.0/", version: 0 }]]), requests: [], counters: { in: 0, co: 0, dp: 0, dr: 0, dh: 0, contact: 0 } };
   const sessions = new Map<string, string[]>();
   let linkIds = 0;
   const deleting = new Set<string>();
@@ -211,6 +218,21 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
         return { field: f.replace(/([A-Z])/g, "_$1").toUpperCase(), counts: [...groups].map(([name, count]) => ({ name, count })) };
       });
       return send(res, 200, { count: recs.reduce((n, o) => n + o.count, 0), results: [], facets });
+    }
+    const gd = path.match(/^\/gbif\/v1\/dataset\/([\w-]+)\/document$/);
+    if (gd) {
+      const d = state.gbif.get(gd[1]!)?.document;
+      return d ? send(res, 200, d, { "Content-Type": "application/xml" }) : send(res, 404, { error: "not found" });
+    }
+    const gi = path.match(/^\/gbif\/v1\/installation\/([\w-]+)$/);
+    if (gi) return state.gbifInstallations.has(gi[1]!) ? send(res, 200, { key: gi[1], ...state.gbifInstallations.get(gi[1]!) }) : send(res, 404, { error: "not found" });
+    const sc = path.match(/^\/schema\/([\w./-]+\.xsd)$/);
+    if (sc && state.schemaDir && !sc[1]!.includes("..")) return send(res, 200, readFileSync(join(state.schemaDir, sc[1]!), "utf8"), { "Content-Type": "application/xml" });
+    const em = path.match(/^\/ws\/eml\/(dr\d+)$/);
+    if (em) {
+      const e = state.emls.get(em[1]!);
+      if (e === undefined) return send(res, 404, { error: "not found" });
+      return typeof e === "string" ? send(res, 200, e, { "Content-Type": "application/xml" }) : send(res, e.status, e.body);
     }
     const gb = path.match(/^\/gbif\/v1\/dataset\/([\w-]+)$/);
     if (gb) return state.gbif.has(gb[1]!) ? send(res, 200, { key: gb[1], ...state.gbif.get(gb[1]!) }) : send(res, 404, { error: "not found" });
