@@ -1,3 +1,4 @@
+import { readZip } from "../../src/zip.ts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -14,6 +15,12 @@ import type { AddressInfo } from "node:net";
 
 type Json = Record<string, any>;
 
+/** Connection profiles with file upload (connection-profiles.json of ala-install): [paramName, boolean]. */
+const UPLOAD_PROFILES: Record<string, Array<[string, boolean]>> = {
+  DwC: [["automation", true], ["termsForUniqueKey", false], ["strip", true], ["incremental", true], ["csv_delimiter", false], ["csv_eol", false], ["csv_escape_char", false], ["csv_text_enclosure", false]],
+  DwCA: [["automation", true], ["termsForUniqueKey", false], ["strip", true], ["incremental", true]],
+};
+
 export interface FakeOptions {
   version?: string;
   /** Answer 500 on single data resource GETs, as 6.0.0 does (FindBest). */
@@ -27,7 +34,7 @@ export interface FakeOptions {
 export interface FakeState {
   entities: Map<string, Json>;
   contacts: Map<number, Json>;
-  links: Array<{ uid: string; contactId: number; role: string; administrator: boolean; primaryContact: boolean; notify?: boolean }>;
+  links: Array<{ id?: number; uid: string; contactId: number; role: string; administrator: boolean; primaryContact: boolean; notify?: boolean }>;
   providerMaps: Map<string, { institutionCodes: string[]; collectionCodes: string[]; exact: boolean; matchAnyCollectionCode: boolean; warning?: string }>;
   /** Provider maps without a collection (a database older than initial.sql, whose collection_id is nullable). */
   /** Records in the portal's index (biocache-service over pipelines), grouped: one row per combination with a count. */
@@ -69,6 +76,7 @@ const WRITABLE: Record<string, string[]> = {
 export async function startFakeCollectory(opts: FakeOptions = {}) {
   const state: FakeState = { entities: new Map(), contacts: new Map(), links: [], providerMaps: new Map(), legacyMaps: [], index: [], gbifOccurrences: [], ipt: [], gbif: new Map(), loads: new Map(), licences: new Map([[1, { name: "Creative Commons Attribution", acronym: "CC-BY", licenceVersion: "4.0", url: "https://creativecommons.org/licenses/by/4.0/", version: 0 }]]), requests: [], counters: { in: 0, co: 0, dp: 0, dr: 0, dh: 0, contact: 0 } };
   const sessions = new Map<string, string[]>();
+  let linkIds = 0;
   const deleting = new Set<string>();
   let base = "";
 
@@ -134,7 +142,8 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
     const path = url.pathname;
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
-    const raw = Buffer.concat(chunks).toString("utf8");
+    const rawBuf = Buffer.concat(chunks);
+    const raw = rawBuf.toString("utf8");
     const caller = who(req);
     state.requests.push({ method: req.method ?? "GET", path: path + url.search, auth: caller.kind, body: raw || undefined });
     const isWs = path.startsWith("/ws/");
@@ -267,6 +276,7 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
           return c ? send(res, 200, c) : send(res, 404, "");
         }
         const m = path.match(/^\/ws\/contacts(?:\/(\d+))?$/);
+        if (m && m[1] && req.method === "GET") return editorOrScope ? (state.contacts.has(Number(m[1])) ? send(res, 200, state.contacts.get(Number(m[1]))) : send(res, 404, "")) : deny();
         if (m && req.method === "POST") {
           if (!editorOrScope) return deny();
           const body = JSON.parse(raw);
@@ -278,7 +288,8 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
       }
       const cl = path.match(/^\/ws\/(\w+)\/(\w+\d+)\/contacts(?:\/(\d+))?$/);
       if (cl) {
-        if (req.method === "GET" && !cl[3]) return send(res, 200, state.links.filter((l) => l.uid === cl[2]).map((l) => ({ contact: state.contacts.get(l.contactId), role: l.role, primaryContact: l.primaryContact, editor: l.administrator, notify: !!l.notify })));
+        // public contacts only (#193): an unpublished contact is not listed, whoever asks
+        if (req.method === "GET" && !cl[3]) return send(res, 200, state.links.filter((l) => l.uid === cl[2] && state.contacts.get(l.contactId)?.["publish"] !== false).map((l) => ({ contact: state.contacts.get(l.contactId), role: l.role, primaryContact: l.primaryContact, editor: l.administrator, notify: !!l.notify })));
         if (req.method === "POST" && cl[3]) {
           if (!editorOrScope) return deny();
           const b = JSON.parse(raw);
@@ -288,7 +299,7 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
             Object.assign(link, Object.fromEntries(Object.entries({ role: b.role, administrator: b.administrator, primaryContact: b.primaryContact, notify: b.notify }).filter(([, v]) => v !== undefined)));
             return send(res, 200, "updated");
           }
-          state.links.push({ uid: cl[2]!, contactId: Number(cl[3]), role: b.role, administrator: !!b.administrator, primaryContact: !!b.primaryContact, notify: false });
+          state.links.push({ id: ++linkIds, uid: cl[2]!, contactId: Number(cl[3]), role: b.role, administrator: !!b.administrator, primaryContact: !!b.primaryContact, notify: false });
           return send(res, 201, "created");
         }
         if (req.method === "DELETE" && cl[3]) {
@@ -363,6 +374,20 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
       flashes.delete(show[2]!);
       return send(res, 200, page(show[2]!, `<h1>${state.entities.get(show[2]!)?.["name"]}</h1>`, flash));
     }
+    // contacts of an entity on its edit page (views/shared/showContacts.gsp) and a link's role form (contactRole.gsp)
+    const showContacts = path.match(/^\/(\w+)\/edit\/(\w+\d+)$/);
+    if (showContacts && url.searchParams.get("page") === "/shared/showContacts") {
+      const blocks = state.links.filter((l) => l.uid === showContacts[2]).map((l) => `<div class="show-section card card-body"><span class="contactName">${state.contacts.get(l.contactId)?.["firstName"] ?? ""}</span><ul class="detailList"><li>${state.contacts.get(l.contactId)?.["email"] ?? ""}</li></ul><a href="/contact/edit/${l.contactId}?returnTo=x">Edit</a><a href="/${showContacts[1]}/editRole/${l.id}?returnTo=x">Edit role</a></div>`);
+      return send(res, 200, page("contacts", `<h2>Current contacts</h2>${blocks.join("")}`));
+    }
+    const editRole = path.match(/^\/(\w+)\/editRole\/(\d+)$/);
+    if (editRole) {
+      const l = state.links.find((x) => x.id === Number(editRole[2]));
+      if (!l) return redirect(res, `/${editRole[1]}/list`);
+      const cb = (n: string, on?: boolean) => `<input type="hidden" name="_${n}"><input type="checkbox" name="${n}" value="true"${on ? ' checked="checked"' : ""}>`;
+      return send(res, 200, page("role", `<form method="post" action="/${editRole[1]}/base"><input type="hidden" name="contactForId" value="${l.id}"><input type="text" name="role" value="${l.role ?? ""}">${cb("administrator", l.administrator)}${cb("notify", l.notify)}${cb("primaryContact", l.primaryContact)}<input type="submit" name="_action_updateContactRole" value="Update"></form>`));
+    }
+
     const hubEdit = path.match(/^\/dataHub\/edit\/(dh\d+)$/);
     if (hubEdit && url.searchParams.get("page") === "/dataHub/members") {
       const h = state.entities.get(hubEdit[1]!)!;
@@ -377,6 +402,53 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
       h["version"]++;
       return redirect(res, `/dataHub/show/${h["uid"]}`);
     }
+    // data file upload (views/dataResource/upload.gsp, DataImportService.importDataFileForDataResource of 6.3.0)
+    const upl = path.match(/^\/dataResource\/upload\/(dr\d+)$/);
+    if (upl) {
+      const cp = JSON.parse(String(state.entities.get(upl[1]!)?.["connectionParameters"] ?? "{}"));
+      const input = (n: string, bool = false) => (bool ? `<input type="hidden" name="_${n}"><input type="checkbox" name="${n}" value="true"${cp[n] ? " checked" : ""}>` : `<input type="text" name="${n}" value="${Array.isArray(cp[n]) ? cp[n].join(",") : (cp[n] ?? "")}">`);
+      const profiles = Object.entries(UPLOAD_PROFILES).map(([name, ps]) => `<div id="profile-${name}">${ps.map(([n, b]) => input(n, b)).join("")}</div>`).join("");
+      return send(res, 200, page("upload", `<form action="/dataResource/uploadDataFile" method="post" enctype="multipart/form-data"><input type="hidden" name="id" value="${upl[1]}"><select id="protocol" name="protocol">${Object.keys(UPLOAD_PROFILES).map((p) => `<option value="${p}">${p}</option>`).join("")}</select><input type="file" name="myFile"><div id="connectionParams"></div><input type="submit" value="Upload"></form><div id="connectionTemplates">${profiles}</div>`));
+    }
+    if (path === "/dataResource/uploadDataFile" && req.method === "POST") {
+      const fd = await new Request(base + path, { method: "POST", headers: { "content-type": String(req.headers["content-type"]) }, body: rawBuf }).formData();
+      const uid = String(fd.get("id"));
+      const dr = state.entities.get(uid)!;
+      const protocol = String(fd.get("protocol"));
+      const file = fd.get("myFile") as File;
+      const cp = JSON.parse(String(dr["connectionParameters"] ?? "{}"));
+      // every parameter of the profile from the request: not sent = null, or false for a boolean
+      for (const [n, b] of UPLOAD_PROFILES[protocol]!) cp[n] = b ? fd.get(n) === "true" : (fd.get(n) as string | null);
+      if (typeof cp.termsForUniqueKey === "string") cp.termsForUniqueKey = cp.termsForUniqueKey.split(",").map((t: string) => t.trim());
+      if (!cp.termsForUniqueKey) cp.termsForUniqueKey = ["occurrenceID"];
+      cp.url = `${base}/upload/${uid}/${Date.now()}/${file.name}`;
+      cp.protocol = protocol;
+      dr["connectionParameters"] = JSON.stringify(cp);
+      let parties: Array<{ firstName?: string; lastName?: string; email?: string }> = [];
+      if (protocol === "DwCA") {
+        const eml = readZip(Buffer.from(await file.arrayBuffer())).find((e) => e.name === "eml.xml");
+        if (eml) {
+          const x = eml.read().toString("utf8");
+          const tag = (t: string) => x.match(new RegExp(`<${t}>([^<]*)</${t}>`))?.[1];
+          // the EML is the source of truth: a missing element clears the field
+          dr["name"] = tag("title") ?? "";
+          dr["guid"] = x.match(/packageId="([^"]*)"/)?.[1] ?? "";
+          dr["pubDescription"] = tag("para") ?? "";
+          parties = [...x.matchAll(/<(?:creator|contact|metadataProvider)>([\s\S]*?)<\/(?:creator|contact|metadataProvider)>/g)].map((m) => ({ firstName: m[1]!.match(/<givenName>([^<]*)/)?.[1], lastName: m[1]!.match(/<surName>([^<]*)/)?.[1], email: m[1]!.match(/<electronicMailAddress>([^<]*)/)?.[1] }));
+        }
+      }
+      // syncContacts: links no party matches are removed, and their contacts when nothing else links them
+      const keep = new Set<number>();
+      for (const p of parties) {
+        const l = state.links.find((l) => l.uid === uid && ((c) => (!p.lastName || c?.["lastName"] === p.lastName) && (!p.email || !c?.["email"] || c["email"] === p.email))(state.contacts.get(l.contactId)));
+        if (l) keep.add(l.contactId);
+      }
+      const gone = state.links.filter((l) => l.uid === uid && !keep.has(l.contactId)).map((l) => l.contactId);
+      state.links = state.links.filter((l) => !(l.uid === uid && gone.includes(l.contactId)));
+      for (const id of gone) if (!state.links.some((l) => l.contactId === id)) state.contacts.delete(id);
+      return redirect(res, `/dataResource/show/${uid}`);
+    }
+
     const cons = path.match(/^\/(dataResource|dataProvider)\/editConsumers\/(\w+\d+)$/);
     if (cons) {
       const e = state.entities.get(cons[2]!)!;

@@ -46,7 +46,7 @@ MCP client ──stdio or Streamable HTTP──▶ collectory-mcp ──HTTP─�
 | `collectory_list`, `collectory_get`, `collectory_count` | `/ws/{entity}`, `/ws/{entity}/{uid}`, `POST /ws/find/{entity}`, `/ws/{entity}/count` | read |
 | `collectory_lookup_codes`, `collectory_code_map` | `/ws/lookup/inst/{i}/coll/{c}`; every collection's `recordsProviderMapping` (`POST /ws/find/collection`) plus, with a login, `/providerMap/list` and `show` for maps without a collection | read |
 | `collectory_mapping_check` | the resource, `/ws/lookup`; codes from biocache-service `/occurrences/search` facets (`COLLECTORY_BIOCACHE_URL`) or GBIF `occurrence/search` facets by dataset | read |
-| `collectory_contacts`, `collectory_licences` | `/ws/{entity}/{uid}/contacts`, `/ws/licence` | read |
+| `collectory_contacts`, `collectory_licences` | with a login `/{entity}/edit/{uid}?page=/shared/showContacts`, `/ws/contacts/{id}` and the `editRole` forms (every contact); without, `/ws/{entity}/{uid}/contacts` (published ones only, #193); `/ws/licence` | read |
 | `collectory_audit` | the above, over the whole registry | read |
 | `collectory_save_entity` | `POST /ws/{entity}[/{uid}]` | write, dry run by default |
 | `collectory_dependencies`, `collectory_delete_entity` | `/ws/{entity}/{uid}`, `DELETE /ws/{entity}/{uid}` | read / destructive, confirm |
@@ -64,6 +64,7 @@ MCP client ──stdio or Streamable HTTP──▶ collectory-mcp ──HTTP─�
 | `collectory_gbif_register` | `/{entity}/registerGBIF|updateGBIF|deleteGBIF/{uid}` | write, confirm (admin) |
 | `collectory_gbif_health`, `collectory_gbif_organizations`, `collectory_gbif_import_organization` | `/gbif/healthCheck`, `/dataProvider/searchForOrganizations`, `importFromOrganization` | read / write (admin) |
 | `collectory_gbif_sync_all` | `/ws/syncGBIF` | destructive, confirm |
+| `collectory_upload_data_file` (stdio only: reads a local file) | `/dataResource/upload/{uid}` (the protocol's parameters) → multipart `/dataResource/uploadDataFile`, verified with `/ws/dataResource/{uid}` and the contacts | write, dry run by default (admin) |
 | `collectory_save_licence`, `collectory_delete_licence` | `/licence/list|create|edit|show` admin forms, verified with `/ws/licence` | write, dry run by default / destructive, confirm (admin) |
 
 Sources for the operations: the LA wiki (Data-mappings, Data-Hub, Collectory-entities, Other-ways-to-add-data-resource,
@@ -160,9 +161,31 @@ wiki's biocache-store steps):
     `dataResourceUid`; the check uses one `collectionCode` facet per institution code, so it reports the pairs that occur,
     not a cross product.
 
+Uploading a data file (`/dataResource/uploadDataFile`, `DataImportService.importDataFileForDataResource`; wiki
+Upload-data, #207, #208, #307):
+
+26. **Every parameter of the protocol's profile is set from the request**: one not sent becomes null (a checkbox not
+    sent, false), so the admin page loses `incremental`, `termsForUniqueKey` or the CSV options unless they are typed
+    again (#307). `termsForUniqueKey` falls back to `occurrenceID`; the url becomes the uploaded file. The tool reads the
+    profile from the upload page and sends the stored values back. The page itself answers 500 without
+    `/data/collectory/config/connection-profiles.json` (the harness mounts ala-install's). The default upload limit is
+    25 MB (`grails.controllers.upload.maxFileSize`).
+27. **The archive's EML overwrites the resource's metadata** (`EmlImportService.emlFields`: name, guid from packageId,
+    description, contact email and phone, rights, citation, coverage, dates, purpose, methods, licence). 6.x clears a
+    field the EML has no element for; 5.1.1 keeps it.
+28. **6.x syncs contacts from the EML** (`IptService.syncContacts`): links no EML party matches (by last name, first
+    name, email, organisation, position) are removed and contacts no other entity uses are deleted. A CSV upload or a
+    DwCA without `eml.xml` therefore **removes every contact** of the resource (also in develop). The tool refuses until
+    `contacts: "accept"`, or `"restore"`, which re-creates and re-links them after an upload without EML. 5.1.1 only adds
+    the EML's contacts, as primary contacts.
+29. **The contacts web service lists only published contacts** (`/ws/{entity}/{uid}/contacts`, #193), so a write
+    verified through it cannot see an unpublished contact. With a login the tools read the entity's contacts admin page
+    instead, with `/ws/contacts/{id}` and each link's `editRole` form.
+
 What would make this safe by design: a JSON API for provider maps, licences, consumers and hub members accepting the
 same scope as the other writes; server-side validation of connection parameters; a dry-run mode for the IPT scan;
-POST (with CSRF protection) for the GBIF actions; the GBIF password out of the review page.
+POST (with CSRF protection) for the GBIF actions; the GBIF password out of the review page; an upload that keeps the
+connection parameters it is not given and leaves contacts alone when the file has no EML.
 
 ### Why not a plugin inside collectory?
 
@@ -176,7 +199,7 @@ transport already gives the "nothing to install" option. The findings above are 
 | `test/units.test.ts` | — | field rules, connection parameter checks, form parsing and fail-closed filling, CSV and IPT RSS parsing, config, redaction |
 | `test/mcp-e2e.test.ts` | fake collectory 6.3.0 (`test/helpers/fake-collectory.ts`) | every workflow over MCP: previews write nothing, merges keep data, conflicts and hidden URLs are refused, form lane with a session, machine token refused on forms, repatriation posts only the chosen rows, secrets masked, 6.0.0 fallback |
 | `test/stdio.test.ts` | fake collectory | the server as an MCP client starts it |
-| `test/integration/collectory.test.ts` | a real collectory | anonymous: version, refusal; with JWTs from the test issuer and a person's login: create/update, code mapping + lookup + conflict, connection parameters (admin vs editor), hub members by web service and by form (machine and user tokens refused there), record consumers, contacts, delete with dependencies, IPT preview and scan (with and without create), GBIF preview, repatriation search, GBIF organisations, licences (create, update, near-duplicate, delete), audit |
+| `test/integration/collectory.test.ts` | a real collectory | anonymous: version, refusal; with JWTs from the test issuer and a person's login: create/update, code mapping + lookup + conflict, connection parameters (admin vs editor), hub members by web service and by form (machine and user tokens refused there), record consumers, contacts (an unpublished one seen only with a login), delete with dependencies, data file upload (parameters kept, contacts per version), IPT preview and scan (with and without create), GBIF preview, repatriation search, GBIF organisations, licences (create, update, near-duplicate, delete), audit |
 
 The fake implements the behaviour taken from the 6.3.0 code (CrudService, PermissionInterceptor, the GSP field names).
 The guards were mutation-checked: disabling each of the hidden-url refusal, the code merge, the conflict check, the
@@ -188,7 +211,10 @@ without the role), the root of a collectory under a context path, the tolerated 
 form post, the 5.x licence fallback, the code mapping conflicts with matchAny maps, in any case, and with maps without
 a collection (refused when they cannot be read), the lookup that resolves to an institution, and the contact link
 notify, email case, and update preview, and the mapping check verdicts (reprocess vs missing mapping, real pairs, the
-default collectionCode suggestion, consumers, a lookup cache per call) makes at least one test fail.
+default collectionCode suggestion, consumers, a lookup cache per call), the full contact listing with a login, and
+the upload's stored parameters sent back, unknown parameters, unique key change, key terms missing from the file,
+contact removal refusal, restore refused with an EML, contact restore, and cleared EML fields makes at least one test
+fail.
 
 ### Integration harness
 
@@ -218,6 +244,5 @@ come from spatial-mcp (MPL-2.0). Dependencies are MIT.
 
 ## Not covered yet
 
-Licence vocabulary administration (form lane, `/licence/save`), ProviderMaps of an institution without a collection,
-taxonomy hints, images and logos, EML validation, attributions, uploading data files to a data resource, temp data
-resources (sandbox), the OIDC browser login of spatial-mcp.
+Creating ProviderMaps of an institution without a collection (fresh schemas refuse them), taxonomy hints, images and
+logos, EML validation, attributions, temp data resources (sandbox), the OIDC browser login of spatial-mcp.

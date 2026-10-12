@@ -37,3 +37,5 @@ services:
     volumes:
       - ${COLLECTORY_WAR:?set COLLECTORY_WAR to the collectory WAR}:/opt/collectory.war:ro
       - ./collectory-config.properties:/data/collectory/config/collectory-config.properties:ro
+      # from ala-install (roles/collectory/files/data/config, Apache-2.0): the upload page needs it
+      - ./connection-profiles.json:/data/collectory/config/connection-profiles.json:ro

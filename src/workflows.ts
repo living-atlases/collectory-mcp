@@ -468,36 +468,67 @@ export class Workflows {
     // collectory ignores notify when it creates the link; a second POST updates the link and sets it.
     if (link.notify) await this.client.linkContact(uid, id, link);
     const now = await this.linkOf(uid, c.email);
-    return { ...plan, saved: true, contactId: id, now: now ?? null, verified: !!now && sameLink(now, link) };
+    if (!now && !this.client.hasSession && contact["publish"] === false) return { ...plan, saved: true, contactId: id, now: null, verified: null, note: "the contact is unpublished and the web service lists only published contacts (#193): log in (COLLECTORY_USERNAME) to verify" };
+    return { ...plan, saved: true, contactId: id, now: now ? stripComplete(now) : null, verified: !!now && sameLink(now, link) };
+  }
+
+  /**
+   * Every contact linked to an entity. /ws/{entity}/{uid}/contacts lists only published contacts (#193); with a login
+   * the admin page lists them all, each contact read by id and its link flags from its role form.
+   */
+  async contactLinks(uid: string): Promise<{ links: FullContactLink[]; complete: boolean }> {
+    if (this.client.hasSession) {
+      const { html } = await this.client.page(`/${entityOf(uid)}/edit/${uid}?page=/shared/showContacts`);
+      const $ = cheerio.load(html);
+      const links: FullContactLink[] = [];
+      for (const block of $(".show-section").toArray()) {
+        const id = $(block).find('a[href*="/contact/edit/"]').attr("href")?.match(/\/contact\/edit\/(\d+)/)?.[1];
+        const linkId = $(block).find('a[href*="/editRole/"]').attr("href")?.match(/\/editRole\/(\d+)/)?.[1];
+        if (!id || !linkId) continue;
+        const contact = await this.client.json<Json>(`/ws/contacts/${id}`, { user: "optional" }).catch(() => ({}) as Json);
+        const role = await this.client.page(`/${entityOf(uid)}/editRole/${linkId}`);
+        const f = findForm(role.html, role.url, { submit: "_action_updateContactRole" });
+        const on = (n: string) => f.fields.some(([k, v]) => k === n && v !== "");
+        links.push({ ...pick(contact, ["title", "firstName", "lastName", "email", "phone", "fax", "mobile", "publish"]), id: Number(id), linkId, role: f.fields.find(([k]) => k === "role")?.[1] ?? "", administrator: on("administrator"), primaryContact: on("primaryContact"), notify: on("notify") });
+      }
+      return { links, complete: true };
+    }
+    const ws = await this.client.contactsFor(uid).catch(() => []);
+    return { links: ws.map((l) => ({ ...pick(l["contact"] as Json, ["title", "firstName", "lastName", "email", "phone", "fax", "mobile", "publish"]), role: String(l["role"] ?? ""), administrator: !!l["editor"], primaryContact: !!l["primaryContact"], notify: !!l["notify"] })), complete: false };
   }
 
   /** The link of the contact with this email to an entity, as {role, administrator, primaryContact, notify}. */
-  private async linkOf(uid: string, email: string): Promise<ContactLink | undefined> {
-    const l = (await this.client.contactsFor(uid).catch(() => [])).find((x) => String((x["contact"] as Json | undefined)?.["email"] ?? "").toLowerCase() === email.toLowerCase());
-    return l && { role: String(l["role"] ?? ""), administrator: !!l["editor"], primaryContact: !!l["primaryContact"], notify: !!l["notify"] };
+  private async linkOf(uid: string, email: string): Promise<(ContactLink & { complete: boolean }) | undefined> {
+    const { links, complete } = await this.contactLinks(uid);
+    const l = links.find((x) => String(x.email ?? "").toLowerCase() === email.toLowerCase());
+    return l && { role: l.role, administrator: l.administrator, primaryContact: l.primaryContact, notify: l.notify, complete };
+  }
+
+  private notFound(uid: string, email: string, hint = "") {
+    return new Error(`${email} is not a contact of ${uid}${this.client.hasSession ? "" : " as far as the web service shows: it lists only published contacts (#193); set COLLECTORY_USERNAME to see them all"}${hint}`);
   }
 
   /** Change the role or flags of an existing contact link (the web service updates a link it already has). */
   async updateContact(uid: string, email: string, changes: Partial<ContactLink>, apply: boolean) {
     const current = await this.linkOf(uid, email);
-    if (!current) throw new Error(`${email} is not a contact of ${uid}: use collectory_add_contact`);
-    const next = { ...current, ...Object.fromEntries(Object.entries(changes).filter(([, v]) => v !== undefined)) } as ContactLink;
+    if (!current) throw this.notFound(uid, email, " (collectory_add_contact adds it)");
+    const next = { ...stripComplete(current), ...Object.fromEntries(Object.entries(changes).filter(([, v]) => v !== undefined)) } as ContactLink;
     const diff = (Object.keys(next) as Array<keyof ContactLink>).filter((k) => next[k] !== current[k]).map((k) => ({ field: k, from: current[k], to: next[k] }));
-    const plan = { uid, email, current, changes: diff, ...(diff.length ? {} : { warning: "nothing changes" }) };
+    const plan = { uid, email, current: stripComplete(current), changes: diff, ...(diff.length ? {} : { warning: "nothing changes" }) };
     if (!apply || !diff.length) return plan;
     const contact = await this.client.contactByEmail(email);
     const id = Number(contact?.["id"]);
     if (!id) throw new Error(`no contact id for ${email}`);
     await this.client.linkContact(uid, id, { ...next });
     const now = await this.linkOf(uid, email);
-    return { ...plan, saved: true, now: now ?? null, verified: !!now && sameLink(now, next) };
+    return { ...plan, saved: true, now: now ? stripComplete(now) : null, verified: !!now && sameLink(now, next) };
   }
 
   async removeContact(uid: string, email: string, apply: boolean) {
     const current = await this.linkOf(uid, email);
-    if (!current) throw new Error(`${email} is not a contact of ${uid}`);
-    const others = (await this.client.contactsFor(uid)).length - 1;
-    const plan = { uid, email, current, ...(current.primaryContact ? { warning: `${email} is the primary contact${others ? "" : " and the only contact"} of ${uid}` } : {}) };
+    if (!current) throw this.notFound(uid, email);
+    const others = (await this.contactLinks(uid)).links.length - 1;
+    const plan = { uid, email, current: stripComplete(current), ...(current.primaryContact ? { warning: `${email} is the primary contact${others ? "" : " and the only contact"} of ${uid}` } : {}) };
     if (!apply) return plan;
     const contact = await this.client.contactByEmail(email);
     await this.client.unlinkContact(uid, Number(contact?.["id"]));
@@ -718,6 +749,25 @@ export interface ContactLink {
   primaryContact: boolean;
   notify: boolean;
 }
+
+export interface FullContactLink extends ContactLink {
+  id?: number;
+  linkId?: string;
+  title?: string;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  phone?: string;
+  fax?: string;
+  mobile?: string;
+  publish?: boolean;
+}
+
+const pick = (o: Json | undefined, keys: string[]) => Object.fromEntries(keys.filter((k) => o?.[k] !== undefined && o?.[k] !== null).map((k) => [k, o![k]]));
+const stripComplete = <T extends { complete?: boolean }>(l: T) => {
+  const { complete: _c, ...rest } = l;
+  return rest;
+};
 
 const sameLink = (a: ContactLink, b: ContactLink) => a.role === b.role && a.administrator === b.administrator && a.primaryContact === b.primaryContact && a.notify === b.notify;
 

@@ -6,14 +6,18 @@ import { noAuth, staticToken } from "../src/auth.ts";
 import { CollectoryClient } from "../src/collectory-client.ts";
 import { createServer } from "../src/server.ts";
 import { WebSession } from "../src/web-session.ts";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { writeZip } from "../src/zip.ts";
 import { ADMIN_LOGIN, startFakeCollectory, USER_LOGIN } from "./helpers/fake-collectory.ts";
 
 type Fake = Awaited<ReturnType<typeof startFakeCollectory>>;
 
-async function connect(fake: Fake, o: { token?: string; login?: boolean | typeof USER_LOGIN; readonly?: boolean; secrets?: string[]; index?: boolean } = {}) {
+async function connect(fake: Fake, o: { token?: string; login?: boolean | typeof USER_LOGIN; readonly?: boolean; secrets?: string[]; index?: boolean; remote?: boolean } = {}) {
   const account = o.login === true ? ADMIN_LOGIN : o.login || undefined;
   const client = new CollectoryClient(fake.base, { auth: o.token ? staticToken(o.token) : noAuth, session: account ? new WebSession(account.username, account.password) : undefined });
-  const server = createServer({ client, config: { readonly: !!o.readonly, gbifApi: `${fake.base}/gbif/v1`, biocacheApi: o.index ? `${fake.base}/biocache` : undefined }, secrets: o.secrets ?? [ADMIN_LOGIN.password, o.token] });
+  const server = createServer({ client, config: { readonly: !!o.readonly, gbifApi: `${fake.base}/gbif/v1`, biocacheApi: o.index ? `${fake.base}/biocache` : undefined }, localFiles: !o.remote, secrets: o.secrets ?? [ADMIN_LOGIN.password, o.token] });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await server.connect(a);
   const mcp = new Client({ name: "test", version: "0" });
@@ -236,6 +240,71 @@ describe("collectory-mcp over MCP against a fake collectory 6.3.0", () => {
     assert.deepEqual(r.pairs.map((p: any) => [p.institutionCode, p.collectionCode, p.records, p.verdict]), [["MNCN", "ENT", 5, "ok"], ["MNCN", null, 2, "no-collection-code"]]);
     const none = await call("collectory_mapping_check", {});
     assert.match(none.text, /COLLECTORY_BIOCACHE_URL/);
+  });
+
+  describe("data file upload", () => {
+    const dir = mkdtempSync(join(tmpdir(), "collectory-mcp-upload-"));
+    const meta = `<archive xmlns="http://rs.tdwg.org/dwc/text/"><core rowType="http://rs.tdwg.org/dwc/terms/Occurrence"><files><location>occurrence.txt</location></files><id index="0"/><field index="1" term="http://rs.tdwg.org/dwc/terms/catalogNumber"/></core></archive>`;
+    const eml = `<eml:eml xmlns:eml="eml://ecoinformatics.org/eml-2.1.1" packageId="pkg-1"><dataset><title>New title</title><contact><individualName><givenName>Ana</givenName><surName>A</surName></individualName><electronicMailAddress>ana@example.org</electronicMailAddress></contact></dataset></eml:eml>`;
+    const zip = join(dir, "a.zip");
+    const csv = join(dir, "a.csv");
+    writeFileSync(zip, writeZip({ "meta.xml": meta, "eml.xml": eml, "occurrence.txt": "id\tcatalogNumber\n1\tA1\n" }));
+    writeFileSync(csv, "catalogNumber,scientificName\nA1,Abies\n");
+    const setup = async (call: (n: string, a: Record<string, unknown>) => Promise<any>) => {
+      fake.add("dataResource", { uid: "dr7", name: "Old", pubDescription: "keep me", resourceType: "records", connectionParameters: JSON.stringify({ protocol: "DwCA", url: "https://x/a.zip", termsForUniqueKey: ["catalogNumber"], incremental: true }) });
+      for (const [email, first, last] of [["ana@example.org", "Ana", "A"], ["bob@example.org", "Bob", "B"]]) {
+        const r = await call("collectory_add_contact", { uid: "dr7", email, firstName: first, lastName: last, role: "Curator", notify: true, dryRun: false, confirm: true });
+        assert.equal(r.json.verified, true, r.text);
+      }
+    };
+
+    it("keeps every connection parameter, shows what the EML overwrites, and refuses removing contacts unless accepted", async () => {
+      const { call } = await connect(fake, { token: "m2m-token", login: true });
+      await setup(call);
+      const p = await call("collectory_upload_data_file", { uid: "dr7", file: zip });
+      assert.equal(p.json.dryRun, true);
+      assert.match(p.json.errors.join(), /unlink 1 contacts.*bob@example.org.*contacts:"accept"/);
+      assert.deepEqual(p.json.metadataFromEml.find((m: any) => m.field === "name"), { field: "name", from: "Old", to: "New title" });
+      assert.ok(p.json.cleared.includes("pubDescription"), p.text);
+      const refused = await call("collectory_upload_data_file", { uid: "dr7", file: zip, dryRun: false, confirm: true });
+      assert.equal(refused.isError, true);
+      assert.equal(fake.state.links.filter((l) => l.uid === "dr7").length, 2, "nothing uploaded");
+      const u = await call("collectory_upload_data_file", { uid: "dr7", file: zip, contacts: "accept", dryRun: false, confirm: true });
+      assert.equal(u.json.verified, true, u.text);
+      const cp = JSON.parse(String(fake.state.entities.get("dr7")!["connectionParameters"]));
+      assert.equal(cp.incremental, true, "incremental kept (#307)");
+      assert.deepEqual(cp.termsForUniqueKey, ["catalogNumber"], "unique key kept (#207, #208)");
+      assert.deepEqual(u.json.contacts.after, ["ana@example.org"]);
+      assert.equal(fake.state.entities.get("dr7")!["name"], "New title");
+    });
+
+    it("a CSV upload, which wipes every contact in 6.x, can restore them with their flags", async () => {
+      const { call } = await connect(fake, { token: "m2m-token", login: true });
+      await setup(call);
+      const p = await call("collectory_upload_data_file", { uid: "dr7", file: csv, protocol: "DwC" });
+      assert.match(p.json.errors.join(), /unlink 2 contacts.*CSV upload removes every contact.*contacts:"restore"/s);
+      const u = await call("collectory_upload_data_file", { uid: "dr7", file: csv, protocol: "DwC", contacts: "restore", dryRun: false, confirm: true });
+      assert.equal(u.json.verified, true, u.text);
+      assert.deepEqual(u.json.contacts.after.sort(), ["ana@example.org", "bob@example.org"]);
+      assert.ok(u.json.contacts.restored.every((r: any) => r.restored && r.recreated), "collectory deleted the orphaned contacts: re-created");
+      assert.ok(fake.state.links.filter((l) => l.uid === "dr7").every((l) => l.notify && l.role === "Curator"));
+    });
+
+    it("refuses a unique key change, key terms missing from the file and unknown parameters; not offered over HTTP", async () => {
+      const { call } = await connect(fake, { token: "m2m-token", login: true });
+      await setup(call);
+      const key = await call("collectory_upload_data_file", { uid: "dr7", file: zip, termsForUniqueKey: ["occurrenceID"], contacts: "accept" });
+      assert.match(key.json.errors.join(), /termsForUniqueKey changes from catalogNumber to occurrenceID/);
+      assert.match(key.json.errors.join(), /occurrenceID is not a column of the file/);
+      const unknown = await call("collectory_upload_data_file", { uid: "dr7", file: zip, set: { colour: "red" } });
+      assert.match(unknown.text, /colour: not parameters of DwCA/);
+      const restore = await call("collectory_upload_data_file", { uid: "dr7", file: zip, contacts: "restore", dryRun: false, confirm: true });
+      assert.match(restore.text, /"restore" is for uploads without an EML/);
+      assert.ok(!fake.state.requests.some((q) => q.path.startsWith("/dataResource/uploadDataFile")), "nothing uploaded");
+      const remote = await connect(fake, { token: "m2m-token", remote: true });
+      const r = await remote.call("collectory_upload_data_file", { uid: "dr7", file: zip });
+      assert.equal(r.isError, true);
+    });
   });
 
   it("hub members: data resources through the web service, as a JSON string, with the resources to reindex", async () => {
@@ -483,8 +552,22 @@ describe("collectory-mcp over MCP against a fake collectory 6.3.0", () => {
     assert.equal(fake.state.contacts.size, 1);
   });
 
+  it("contacts: unpublished ones are not listed by the web service (#193): with a login they are seen and verified", async () => {
+    const token = await connect(fake, { token: "m2m-token" });
+    const a = await token.call("collectory_add_contact", { uid: "co1", email: "hidden@example.org", lastName: "H", dryRun: false, confirm: true });
+    assert.equal(a.json.verified, null, a.text);
+    assert.match(a.json.note, /#193/);
+    const blind = await token.call("collectory_update_contact", { uid: "co1", email: "hidden@example.org", role: "X", dryRun: false, confirm: true });
+    assert.match(blind.text, /lists only published contacts.*COLLECTORY_USERNAME/);
+    const both = await connect(fake, { token: "m2m-token", login: true });
+    const listed = (await both.call("collectory_contacts", { uid: "co1" })).json;
+    assert.deepEqual(listed.contacts.map((c: any) => [c.email, c.publish]), [["hidden@example.org", false]]);
+    const u = await both.call("collectory_update_contact", { uid: "co1", email: "hidden@example.org", role: "Curator", notify: true, dryRun: false, confirm: true });
+    assert.equal(u.json.verified, true, u.text);
+  });
+
   it("contacts: notify set although collectory ignores it on create; role and flags changed on the existing link; unlinked", async () => {
-    const { call } = await connect(fake, { token: "m2m-token" });
+    const { call } = await connect(fake, { token: "m2m-token", login: true });
     const a = await call("collectory_add_contact", { uid: "co1", email: "eva@example.org", role: "Curator", notify: true, dryRun: false, confirm: true });
     assert.equal(a.json.verified, true, a.text);
     assert.equal(fake.state.links[0]!.notify, true);
@@ -495,7 +578,8 @@ describe("collectory-mcp over MCP against a fake collectory 6.3.0", () => {
     assert.equal(fake.state.links[0]!.role, "Curator", "the preview writes nothing");
     const u = await call("collectory_update_contact", { uid: "co1", email: "eva@example.org", role: "Director", primaryContact: true, dryRun: false, confirm: true });
     assert.equal(u.json.verified, true, u.text);
-    assert.deepEqual({ ...fake.state.links[0]! }, { uid: "co1", contactId: fake.state.links[0]!.contactId, role: "Director", administrator: false, primaryContact: true, notify: true });
+    const { id: _linkId, ...link0 } = fake.state.links[0]! as any;
+    assert.deepEqual(link0, { uid: "co1", contactId: fake.state.links[0]!.contactId, role: "Director", administrator: false, primaryContact: true, notify: true });
     const missing = await call("collectory_update_contact", { uid: "co2", email: "eva@example.org", role: "X", dryRun: false, confirm: true });
     assert.match(missing.text, /not a contact of co2/);
     const ask = await call("collectory_remove_contact", { uid: "co1", email: "eva@example.org" });

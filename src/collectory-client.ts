@@ -79,6 +79,8 @@ export interface RawOptions {
   method?: string;
   json?: unknown;
   form?: URLSearchParams;
+  /** A multipart form (file uploads); fetch sets the content type with its boundary. */
+  multipart?: FormData;
   accept?: string;
   /** Send credentials: true always, "optional" only when configured and without starting a login. */
   user?: boolean | "optional";
@@ -267,11 +269,11 @@ export class CollectoryClient {
   }
 
   /** Post a form as the logged-in person and follow the redirect to the page it lands on. */
-  async submit(action: string, body: URLSearchParams): Promise<{ url: string; status: number; html: string }> {
+  async submit(action: string, body: URLSearchParams | FormData): Promise<{ url: string; status: number; html: string }> {
     const abs = new URL(action, this.baseUrl + "/").toString();
     if (!abs.startsWith(this.baseUrl + "/")) throw new Error(`refusing to post a form to ${new URL(abs).origin}: it is not collectory (${this.baseUrl})`);
     const path = abs.slice(this.baseUrl.length);
-    const res = await this.raw(path, { method: "POST", form: body, accept: "text/html", user: true, withSession: "only" });
+    const res = await this.raw(path, { method: "POST", ...(body instanceof FormData ? { multipart: body } : { form: body }), accept: "text/html", user: true, withSession: "only" });
     if (res.status >= 300 && res.status < 400) {
       const loc = new URL(res.headers.get("location") ?? "/", this.baseUrl + path);
       if (!loc.toString().startsWith(this.baseUrl)) throw new CollectoryError(path, 401, `redirected to ${loc.origin}${loc.pathname} (not logged in)`);
@@ -316,6 +318,8 @@ export class CollectoryClient {
       } else if (o.form) {
         headers["Content-Type"] = "application/x-www-form-urlencoded";
         body = o.form;
+      } else if (o.multipart) {
+        body = o.multipart;
       }
       const res = await this.fetchImpl(url, { method: o.method ?? "GET", headers, body, redirect: "manual", signal: AbortSignal.timeout(this.timeoutMs) });
       if (o.user) session?.store(url, res);

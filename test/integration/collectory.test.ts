@@ -3,6 +3,10 @@ import { after, before, describe, it } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { noAuth, staticToken } from "../../src/auth.ts";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { writeZip } from "../../src/zip.ts";
 import { CollectoryClient } from "../../src/collectory-client.ts";
 import { createServer } from "../../src/server.ts";
 import { WebSession } from "../../src/web-session.ts";
@@ -29,7 +33,7 @@ async function token(q: Record<string, string>) {
 async function connect(tok?: string, login = false) {
   const session = login ? new WebSession(LOGIN_USER!, LOGIN_PASS!) : undefined;
   const client = new CollectoryClient(URL_!, { auth: tok ? staticToken(tok) : noAuth, session, timeoutMs: 60_000 });
-  const server = createServer({ client, config: { readonly: false, gbifApi: "https://api.gbif.org/v1" }, secrets: [tok, LOGIN_PASS] });
+  const server = createServer({ client, config: { readonly: false, gbifApi: "https://api.gbif.org/v1" }, localFiles: true, secrets: [tok, LOGIN_PASS] });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await server.connect(a);
   const mcp = new Client({ name: "it", version: "0" });
@@ -172,11 +176,23 @@ describe("real collectory: writes with JWTs from the test issuer", { skip: (!URL
     const r = await m2m("collectory_add_contact", { uid: co, email, firstName: "Ana", role: "Curator", publish: true, notify: true, dryRun: false, confirm: true });
     assert.equal(r.json?.verified, true, r.text);
     const l = (await m2m("collectory_contacts", { uid: co })).json;
-    assert.ok(l.some((x: any) => x.contact?.email === email), JSON.stringify(l));
+    assert.ok(l.contacts.some((x: any) => x.email === email), JSON.stringify(l));
     const u = await m2m("collectory_update_contact", { uid: co, email, role: "Director", administrator: true, primaryContact: true, dryRun: false, confirm: true });
     assert.equal(u.json?.verified, true, u.text);
     const rm = await m2m("collectory_remove_contact", { uid: co, email, confirm: true });
     assert.equal(rm.json?.removed, true, rm.text);
+  });
+
+  it("contacts: an unpublished contact is seen with a login; without one, the web service hides it (#193)", async () => {
+    const co = await create("collection", { name: `mcp-it hidden contact ${stamp}` });
+    const email = `mcp-it-hidden-${stamp}@example.org`;
+    const a = await admin("collectory_add_contact", { uid: co, email, lastName: "Hidden", role: "Curator", dryRun: false, confirm: true });
+    assert.equal(a.json?.verified, true, a.text);
+    const all = (await admin("collectory_contacts", { uid: co })).json;
+    assert.deepEqual(all.contacts.map((c: any) => [c.email, c.publish]), [[email, false]], JSON.stringify(all));
+    const ws = (await m2m("collectory_contacts", { uid: co })).json;
+    assert.deepEqual(ws.contacts, [], "5.1.1 and 6.3.0 list only published contacts (#193)");
+    assert.match(ws.note, /#193/);
   });
 
   it("delete checks what still refers to the entity", async () => {
@@ -270,6 +286,34 @@ describe("real collectory: writes with JWTs from the test issuer", { skip: (!URL
     assert.equal(c.json?.verified, true, c.text);
     const third = (await m2m("collectory_mapping_check", { uids: [dr] })).json.resources[0];
     assert.ok(!third.warnings.join().includes(`${now.resolvesTo} receive records`), JSON.stringify(third.warnings));
+  });
+
+  it("data file upload keeps the connection parameters; contacts as each version treats them", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "collectory-mcp-it-"));
+    const file = join(dir, "a.zip");
+    const meta = `<archive xmlns="http://rs.tdwg.org/dwc/text/"><core rowType="http://rs.tdwg.org/dwc/terms/Occurrence"><files><location>occurrence.txt</location></files><id index="0"/><field index="1" term="http://rs.tdwg.org/dwc/terms/catalogNumber"/></core></archive>`;
+    const kept = `kept-${stamp}@example.org`;
+    const other = `other-${stamp}@example.org`;
+    const eml = `<eml:eml xmlns:eml="eml://ecoinformatics.org/eml-2.1.1" packageId="mcp-it-${stamp}"><dataset><title>mcp-it uploaded ${stamp}</title><contact><individualName><givenName>Kept</givenName><surName>K${stamp}</surName></individualName><electronicMailAddress>${kept}</electronicMailAddress></contact></dataset></eml:eml>`;
+    writeFileSync(file, writeZip({ "meta.xml": meta, "eml.xml": eml, "occurrence.txt": "id\tcatalogNumber\n1\tA1\n" }, { deflate: true }));
+    const dr = await create("dataResource", { name: `mcp-it upload ${stamp}`, resourceType: "records", pubDescription: "before", connectionParameters: { protocol: "DwCA", url: "https://example.org/a.zip", termsForUniqueKey: ["catalogNumber"], incremental: true } });
+    for (const [email, first, last] of [[kept, "Kept", `K${stamp}`], [other, "Other", `O${stamp}`]]) {
+      const c = await m2m("collectory_add_contact", { uid: dr, email, firstName: first, lastName: last, role: "Curator", publish: true, dryRun: false, confirm: true });
+      assert.equal(c.json?.verified, true, c.text);
+    }
+    const p = await admin("collectory_upload_data_file", { uid: dr, file });
+    if (major >= 6) assert.match(p.json.errors.join(), new RegExp(`unlink 1 contacts.*${other}`), p.text);
+    else assert.deepEqual(p.json.errors, [], p.text);
+    const u = await admin("collectory_upload_data_file", { uid: dr, file, ...(major >= 6 ? { contacts: "accept" } : {}), dryRun: false, confirm: true });
+    assert.equal(u.json?.verified, true, u.text);
+    assert.equal(u.json.connectionParameters.now.incremental, true, "incremental kept (#307)");
+    assert.deepEqual(u.json.connectionParameters.now.termsForUniqueKey, ["catalogNumber"]);
+    assert.equal(u.json.metadataNow.name, `mcp-it uploaded ${stamp}`, "the EML overwrites the name");
+    assert.deepEqual([...u.json.contacts.after].sort(), major >= 6 ? [kept] : [kept, other].sort());
+    // a field the EML lacks: 6.x clears it, 5.x keeps it
+    const after = (await m2m("collectory_get", { uids: [dr] })).json;
+    if (major >= 6) assert.equal(after.pubDescription ?? "", "");
+    else assert.equal(after.pubDescription, "before", "5.x sets only the fields the EML has");
   });
 
   it("GBIF: preview compares with the real GBIF API; repatriation search and organisations read GBIF through collectory", async () => {

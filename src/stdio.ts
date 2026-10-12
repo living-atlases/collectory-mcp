@@ -31,7 +31,7 @@ export async function main() {
   console.log = console.error;
   const config = loadConfig();
   const auth = authFor(config);
-  const server = createServer({ client: clientFor(config, auth), config, secrets: secretsOf(config) });
+  const server = createServer({ client: clientFor(config, auth), config, localFiles: true, secrets: secretsOf(config) });
   await server.connect(new StdioServerTransport());
   if (config.login?.password) console.error("collectory-mcp: COLLECTORY_PASSWORD is deprecated (it sits in plain text in the MCP config): store it with `collectory-mcp set-password` and remove it from the config");
   console.error(`collectory-mcp (POC) on stdio -> ${config.url} (auth: ${auth.describe}${config.login ? `, admin pages as ${config.login.username}` : ""}${config.readonly ? ", read-only" : ""})`);

@@ -5,6 +5,7 @@ import { CollectoryClient, CollectoryError, ENTITIES, entityOf } from "./collect
 import type { Config } from "./config.ts";
 import { Redactor } from "./redact.ts";
 import { MappingCheck } from "./mapping-check.ts";
+import { DataUpload } from "./upload.ts";
 import { Workflows } from "./workflows.ts";
 
 export const VERSION = "0.1.0";
@@ -40,6 +41,8 @@ export interface ServerDeps {
   client: CollectoryClient;
   config: Pick<Config, "readonly" | "gbifApi" | "biocacheApi">;
   secrets?: Array<string | undefined>;
+  /** Tools that read local files (data uploads): only where the server runs on the user's machine (stdio). */
+  localFiles?: boolean;
 }
 
 export function createServer(deps: ServerDeps): McpServer {
@@ -140,7 +143,39 @@ export function createServer(deps: ServerDeps): McpServer {
     },
   );
 
-  tool("collectory_contacts", "read", "Contacts linked to an entity, with their role and flags", { uid: uid() }, async (a) => client.contactsFor(a.uid));
+  if (deps.localFiles) {
+    tool(
+      "collectory_upload_data_file",
+      "write",
+      "Upload a local Darwin Core Archive or CSV to a data resource (the admin page's upload), keeping its connection parameters (incremental, unique key terms…). The preview shows the parameters, the metadata the archive's EML overwrites or clears, and the contacts collectory would unlink; it refuses a unique key change, key terms missing from the file, and contact removal unless asked",
+      {
+        uid: uid("dr"),
+        file: z.string().describe("Path of the file on this machine"),
+        protocol: z.string().optional().describe("DwCA or DwC (CSV); default: the resource's current one"),
+        termsForUniqueKey: z.array(z.string().min(1)).optional(),
+        set: z.record(z.union([z.string(), z.boolean()])).optional().describe("Other parameters of the protocol, e.g. {incremental: true}"),
+        allowKeyChange: z.boolean().optional(),
+        allowMissingKeyTerms: z.boolean().optional(),
+        contacts: z.enum(["accept", "restore"]).optional().describe("accept: let collectory unlink the contacts it would; restore: re-create and re-link them after an upload without EML"),
+        dryRun,
+        confirm,
+      },
+      async (a) => {
+        const { dryRun: _d, confirm: _c, ...input } = a;
+        const up = new DataUpload(client, (u) => wf.contactLinks(u));
+        if (mustConfirm(a)) {
+          const { _send, _removed, _formAction, ...plan } = await up.plan(input);
+          return { dryRun: true, ...plan };
+        }
+        return up.upload(input);
+      },
+    );
+  }
+
+  tool("collectory_contacts", "read", "Contacts linked to an entity, with their role and flags (unpublished ones too, with a login)", { uid: uid() }, async (a) => {
+    const { links, complete } = await wf.contactLinks(a.uid);
+    return { contacts: links, ...(complete ? {} : { note: "the web service lists only published contacts (#193): set COLLECTORY_USERNAME to see them all" }) };
+  });
 
   tool("collectory_licences", "read", "Licences known to collectory (the vocabulary for licenseType)", {}, async () => client.licences());
 

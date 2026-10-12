@@ -26,11 +26,15 @@ It works like its siblings [spatial-mcp](https://github.com/living-atlases/spati
   duplicate every record).
 - **Sync with an IPT**: see what a scan would change *before* running it (metadata that would be overwritten, new
   datasets, datasets whose URL does not match and would be duplicated), then scan.
+- **Upload a data file** (local server only) to a data resource keeping its connection parameters (incremental, unique
+  key terms, CSV options), with a preview of the metadata the archive's EML overwrites or clears and of the contacts
+  collectory would unlink, which it refuses unless you say so (or re-links them after a CSV upload).
 - **GBIF**: see which resources are older than their GBIF dataset and reload them; search the datasets of a country to
   repatriate and load the ones you choose; register or update entities in the GBIF registry; import GBIF
   organisations as data providers; check the GBIF sharing summary.
 - **Everyday edits**: create institutions, collections, providers and resources, change fields (with a preview of each
-  change), add contacts and change their role or flags, check what refers to an entity before deleting it.
+  change), add contacts and change their role or flags or unlink them (unpublished contacts too, with a login), check
+  what refers to an entity before deleting it.
 - **Licences**: add or update the licences resources can choose, refusing near-duplicates (3.0 vs 3.x), and refuse to
   delete one that resources still use.
 - **Find problems**: resources without licence (or with one outside the vocabulary) or unique key terms, broken
@@ -46,7 +50,7 @@ It works like its siblings [spatial-mcp](https://github.com/living-atlases/spati
     and GBIF scans): an access token of a user with `ROLE_EDITOR`/`ROLE_ADMIN`, or a machine client whose token
     carries the scope collectory expects (`ala/internal` by default). On 5.1.x, the legacy API key also works.
   - **Admin pages** (hub institutions and collections, record consumers, licences, GBIF registration, repatriation,
-    creating resources from an IPT): a **person's** account with `ROLE_EDITOR`/`ROLE_ADMIN`, which the server uses to log in
+    creating resources from an IPT, data file uploads): a **person's** account with `ROLE_EDITOR`/`ROLE_ADMIN`, which the server uses to log in
     like a browser. collectory ignores tokens on those pages.
 
 ## Install

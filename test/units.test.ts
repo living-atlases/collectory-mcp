@@ -5,6 +5,8 @@ import { loadConfig, secretsOf } from "../src/config.ts";
 import { checkConnectionParameters, planEntityWrite, same } from "../src/entities.ts";
 import { FormContractError, fill, findForm, pageMessages } from "../src/forms.ts";
 import { Redactor } from "../src/redact.ts";
+import { parseEml, parseMeta } from "../src/upload.ts";
+import { readZip, writeZip } from "../src/zip.ts";
 import { authFor } from "../src/stdio.ts";
 import { overlap, parseIptRss } from "../src/workflows.ts";
 
@@ -170,3 +172,26 @@ describe("code mapping overlap", () => {
     assert.deepEqual(overlap(m(["MNCN"], [], true), m(["MNCN"], [], true)), [{ institutionCode: "MNCN", collectionCode: "*" }]);
   });
 });
+
+describe("zip and Darwin Core Archive parsing", () => {
+  it("reads stored and deflated entries, and refuses what it cannot read", () => {
+    for (const deflate of [false, true]) {
+      const z = readZip(writeZip({ "meta.xml": "<archive/>", "data/occurrence.txt": "a".repeat(5000) }, { deflate }));
+      assert.deepEqual(z.map((e) => [e.name, e.size]), [["meta.xml", 10], ["data/occurrence.txt", 5000]]);
+      assert.equal(z[1]!.read().toString(), "a".repeat(5000));
+    }
+    assert.throws(() => readZip(Buffer.from("not a zip at all, just text")), /not a zip file/);
+    const z64 = writeZip({ "a.txt": "x" });
+    z64.writeUInt32LE(0xffffffff, z64.length - 6);
+    assert.throws(() => readZip(z64), /zip64/);
+  });
+  it("meta.xml core terms and EML parties as collectory reads them", () => {
+    const m = parseMeta(`<archive><core rowType="http://rs.tdwg.org/dwc/terms/Occurrence"><id index="0"/><field index="1" term="http://rs.tdwg.org/dwc/terms/catalogNumber"/><field index="2" term="http://purl.org/dc/terms/modified"/></core></archive>`);
+    assert.deepEqual(m.terms, ["catalogNumber", "modified"]);
+    const e = parseEml(`<eml:eml xmlns:eml="eml://ecoinformatics.org/eml-2.1.1" packageId="p"><dataset><title> T </title><creator><organizationName>Org</organizationName></creator><contact><electronicMailAddress>nobody@example.org</electronicMailAddress></contact></dataset></eml:eml>`);
+    assert.equal(e.text("dataset > title"), "T");
+    assert.equal(e.root.attr("packageId"), "p");
+    assert.deepEqual(e.parties.map((p) => p.element), ["creator"], "a party without surname, organisation or position is skipped");
+  });
+});
+
