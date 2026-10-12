@@ -18,6 +18,8 @@ export interface FakeOptions {
   version?: string;
   /** Answer 500 on single data resource GETs, as 6.0.0 does (FindBest). */
   brokenDrGet?: boolean;
+  /** /ws/licence with only name and url, as 5.x answers. */
+  legacyLicenceWs?: boolean;
 }
 
 export interface FakeState {
@@ -31,6 +33,7 @@ export interface FakeState {
   /** Every request: method, path, auth kind. */
   requests: Array<{ method: string; path: string; auth: string; body?: string }>;
   counters: Record<string, number>;
+  licences: Map<number, { name: string; acronym: string; licenceVersion: string; url: string; imageUrl?: string; version: number }>;
   /** collectory's dataHubCache: a snapshot of the hubs taken on first use and never evicted. */
   hubCache?: Array<{ uid: string; name: string; members: string[] }>;
 }
@@ -56,7 +59,7 @@ const WRITABLE: Record<string, string[]> = {
 };
 
 export async function startFakeCollectory(opts: FakeOptions = {}) {
-  const state: FakeState = { entities: new Map(), contacts: new Map(), links: [], providerMaps: new Map(), ipt: [], gbif: new Map(), loads: new Map(), requests: [], counters: { in: 0, co: 0, dp: 0, dr: 0, dh: 0, contact: 0 } };
+  const state: FakeState = { entities: new Map(), contacts: new Map(), links: [], providerMaps: new Map(), ipt: [], gbif: new Map(), loads: new Map(), licences: new Map([[1, { name: "Creative Commons Attribution", acronym: "CC-BY", licenceVersion: "4.0", url: "https://creativecommons.org/licenses/by/4.0/", version: 0 }]]), requests: [], counters: { in: 0, co: 0, dp: 0, dr: 0, dh: 0, contact: 0 } };
   const sessions = new Map<string, string[]>();
   const deleting = new Set<string>();
   let base = "";
@@ -131,6 +134,30 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
     const editorOrScope = caller.roles.some((r) => r === "ROLE_EDITOR" || r === "ROLE_ADMIN") || caller.scopes.includes("ala/internal");
     const deny = () => send(res, 403, { error: "Access denied. You do not have permissions" });
     const form = () => new URLSearchParams(raw);
+    // The licence forms of 6.3.0: create posts to /licence/save; edit and show post to /ws/licence (Grails reverse-maps
+    // licence/index there) with _action_update / _action_delete.
+    const licencePost = () => {
+      const f = form();
+      if (f.has("_action_delete")) {
+        if (!caller.roles.includes("ROLE_ADMIN")) return redirect(res, "/public/map");
+        state.licences.delete(Number(f.get("id")));
+        return redirect(res, "/licence/list");
+      }
+      const missing = ["name", "acronym", "licenceVersion", "url"].filter((k) => !f.get(k));
+      if (missing.length) return send(res, 200, page("licence", `<ul class="errors">${missing.map((k) => `<li>Property [${k}] cannot be null</li>`).join("")}</ul>`));
+      const fields = { name: f.get("name")!, acronym: f.get("acronym")!, licenceVersion: f.get("licenceVersion")!, url: f.get("url")!, ...(f.get("imageUrl") ? { imageUrl: f.get("imageUrl")! } : {}) };
+      let id = Number(f.get("id"));
+      if (f.has("_action_update")) {
+        const l = state.licences.get(id)!;
+        if (Number(f.get("version")) !== l.version) return send(res, 200, page("licence", `<ul class="errors"><li>Another user has updated this Licence while you were editing</li></ul>`));
+        state.licences.set(id, { ...fields, version: l.version + 1 });
+      } else {
+        id = Math.max(0, ...state.licences.keys()) + 1;
+        state.licences.set(id, { ...fields, version: 0 });
+      }
+      flashes.set(`licence${id}`, `Licence ${id} ${f.has("_action_update") ? "updated" : "created"}`);
+      return redirect(res, `/licence/show/${id}`);
+    };
 
     // ---------- fake IPT and GBIF ----------
     if (path === "/ipt/rss.do") {
@@ -166,7 +193,12 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
         for (const [co, pm] of state.providerMaps) if (pm.institutionCodes.includes(i) && (pm.matchAnyCollectionCode || pm.collectionCodes.includes(c))) return send(res, 200, { uid: co, name: state.entities.get(co)?.["name"] });
         return send(res, 200, { error: `Unable to find collection for ${i}/${c}` });
       }
-      if (path === "/ws/licence") return send(res, 200, [{ name: "Creative Commons Attribution 4.0", url: "https://creativecommons.org/licenses/by/4.0/" }]);
+      if (path === "/ws/licence" && req.method === "POST") {
+        // a form post as the logged-in person: PermissionInterceptor answers JSON 403 on /ws/ without the session's role
+        if (caller.kind !== "session" || !caller.roles.some((r) => r === "ROLE_EDITOR" || r === "ROLE_ADMIN")) return deny();
+        return licencePost();
+      }
+      if (path === "/ws/licence") return send(res, 200, [...state.licences.values()].map((l) => (opts.legacyLicenceWs ? { name: l.name, url: l.url } : { name: l.name, url: l.url, imageUrl: l.imageUrl ?? null, acronym: l.acronym, version: l.licenceVersion })));
       if (path === "/ws/syncGBIF") return editorOrScope && (caller.roles.includes("ROLE_ADMIN") || caller.scopes.length) ? send(res, 200, { status: "STARTED" }) : deny();
       const ipt = path.match(/^\/ws\/ipt\/scan\/(dp\d+)(\.json)?$/);
       if (ipt) {
@@ -259,7 +291,10 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
 
     // ---------- admin pages: a person's login session with ROLE_EDITOR/ROLE_ADMIN ----------
     // 6.3.0 ignores Bearer tokens here, even a person's with ROLE_ADMIN: without a session it starts the login.
-    if (path.startsWith("/public/")) return send(res, 200, page("public", "<p>map</p>"));
+    if (path.startsWith("/public/") || path === "/") return send(res, 200, page("public", "<p>map</p>"));
+    // Pages guarded only by @PermissionRequired (no login filter) send an anonymous caller to the public map, mapped
+    // to "/" in 6.3.0, instead of starting the login.
+    if (caller.kind !== "session" && path.startsWith("/licence/")) return redirect(res, "/");
     if (caller.kind !== "session") return redirect(res, `/cas/login?service=${encodeURIComponent(base + path + url.search)}`);
     // PermissionInterceptor: a logged-in person without the role is sent to the public map.
     if (!caller.roles.some((r) => r === "ROLE_EDITOR" || r === "ROLE_ADMIN")) return redirect(res, "/public/map");
@@ -311,6 +346,20 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
       flashes.set(e["uid"], gr[2] === "deleteGBIF" ? "Resource removed from GBIF" : "Successfully registered in GBIF");
       return redirect(res, `/${gr[1]}/show/${e["uid"]}`);
     }
+    // licences (views/licence/*.gsp of 6.3.0)
+    const licenceForm = (l?: { name: string; acronym: string; licenceVersion: string; url: string; imageUrl?: string }) => ["name", "acronym", "licenceVersion"].map((k) => `<input type="text" name="${k}" maxlength="200" required value="${(l as any)?.[k] ?? ""}">`).join("") + `<input type="url" name="url" maxlength="200" required value="${l?.url ?? ""}"><input type="url" name="imageUrl" maxlength="200" required value="${l?.imageUrl ?? ""}">`;
+    if (path === "/licence/list") return send(res, 200, page("licences", `<table><thead><tr><th>Name</th><th>URL</th><th>Acronym</th><th>Version</th><th>Image</th></tr></thead><tbody>${[...state.licences].map(([id, l]) => `<tr><td><a href="/licence/show/${id}">${l.name}</a></td><td>${l.url}</td><td>${l.acronym}</td><td>${l.licenceVersion}</td><td>${l.imageUrl ? `<img src="${l.imageUrl}">` : ""}</td></tr>`).join("")}</tbody></table>`));
+    if (path === "/licence/create") return send(res, 200, page("new licence", `<form action="/licence/save" method="post">${licenceForm()}<input type="submit" name="create" value="Create"></form>`));
+    const lShow = path.match(/^\/licence\/(show|edit)\/(\d+)$/);
+    if (lShow) {
+      const l = state.licences.get(Number(lShow[2]));
+      if (!l) return redirect(res, "/licence/list");
+      const flash = flashes.get(`licence${lShow[2]}`);
+      flashes.delete(`licence${lShow[2]}`);
+      if (lShow[1] === "show") return send(res, 200, page("licence", `<h1>${l.name}</h1><form action="/ws/licence" method="post"><input type="hidden" name="id" value="${lShow[2]}"><input type="submit" name="_action_delete" value="Delete"></form>`, flash));
+      return send(res, 200, page("edit licence", `<form action="/ws/licence" method="post"><input type="hidden" name="id" value="${lShow[2]}"><input type="hidden" name="version" value="${l.version}">${licenceForm(l)}<input type="submit" name="_action_update" value="Update"><input type="submit" name="_action_delete" value="Delete"></form>`));
+    }
+    if (path === "/licence/save" && req.method === "POST") return licencePost();
     if (path === "/gbif/healthCheck") return send(res, 200, page("GBIF", `<table><tr><td>Records in ALA</td><td>Records indexed today</td><td>1000</td></tr><tr><td>Licence issues (i.e. not CC)</td><td>Data resources that can NOT be shared</td><td>2</td></tr></table>`));
     if (path === "/dataProvider/searchForOrganizations") return send(res, 200, page("orgs", `<table><thead><tr><th>Name</th><th></th></tr></thead><tbody><tr><td>Museo Nacional</td><td><a href="/dataProvider/importFromOrganization?organizationKey=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee&country=${url.searchParams.get("country")}">Import</a></td></tr></tbody></table>`));
     if (path === "/dataProvider/importFromOrganization") {

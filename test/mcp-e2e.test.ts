@@ -61,6 +61,7 @@ describe("collectory-mcp over MCP against a fake collectory 6.3.0", () => {
     fake.state.contacts.clear();
     fake.state.links.length = 0;
     fake.state.hubCache = undefined;
+    fake.state.licences = new Map([[1, { name: "Creative Commons Attribution", acronym: "CC-BY", licenceVersion: "4.0", url: "https://creativecommons.org/licenses/by/4.0/", version: 0 }]]);
     seed(fake);
   });
 
@@ -307,6 +308,51 @@ describe("collectory-mcp over MCP against a fake collectory 6.3.0", () => {
     assert.equal(o.importable[0].organizationKey, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
     const i = await call("collectory_gbif_import_organization", { organizationKey: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", confirm: true });
     assert.equal(i.json.created[0].name, "Museo Nacional");
+  });
+
+  it("licences: create through the admin form, refuse near-duplicates, update by acronym + version", async () => {
+    const { call } = await connect(fake, { login: true });
+    const p = await call("collectory_save_licence", { acronym: "CC0", licenceVersion: "1.0", name: "Public domain", url: "https://creativecommons.org/publicdomain/zero/1.0/" });
+    assert.equal(p.json.action, "create");
+    assert.equal(fake.state.licences.size, 1, "the preview writes nothing");
+    const c = await call("collectory_save_licence", { acronym: "CC0", licenceVersion: "1.0", name: "Public domain", url: "https://creativecommons.org/publicdomain/zero/1.0/", dryRun: false, confirm: true });
+    assert.equal(c.json.verified, true, c.text);
+    const dup = await call("collectory_save_licence", { acronym: "CC-BY", licenceVersion: "4.x", name: "CC BY again", url: "https://creativecommons.org/licenses/by/4.0/", dryRun: false, confirm: true });
+    assert.match(dup.text, /#289/);
+    assert.equal(fake.state.licences.size, 2);
+    const u = await call("collectory_save_licence", { acronym: "cc-by", licenceVersion: "4.0", name: "Creative Commons Attribution 4.0 International", url: "https://creativecommons.org/licenses/by/4.0/", dryRun: false, confirm: true });
+    assert.equal(u.json.action, "update");
+    assert.deepEqual(u.json.changes, [{ field: "name", from: "Creative Commons Attribution", to: "Creative Commons Attribution 4.0 International" }]);
+    assert.equal(fake.state.licences.get(1)!.name, "Creative Commons Attribution 4.0 International");
+    assert.equal(fake.state.licences.size, 2);
+  });
+
+  it("licences on 5.x, whose web service has no acronym or version: matched and verified through the admin list", async () => {
+    const old = await startFakeCollectory({ version: "5.1.1", legacyLicenceWs: true });
+    try {
+      const { call } = await connect(old, { login: true });
+      const u = await call("collectory_save_licence", { acronym: "CC-BY", licenceVersion: "4.0", name: "CC BY 4.0", url: "https://creativecommons.org/licenses/by/4.0/", dryRun: false, confirm: true });
+      assert.equal(u.json?.action, "update", u.text);
+      assert.equal(u.json.verified, true, u.text);
+      assert.equal(old.state.licences.size, 1);
+    } finally {
+      await old.close();
+    }
+  });
+
+  it("licences: delete refuses while resources use the licence; the audit flags licences outside the vocabulary", async () => {
+    const { call } = await connect(fake, { token: "m2m-token", login: true });
+    fake.state.entities.get("dr1")!["licenseVersion"] = "4.0";
+    const ask = await call("collectory_delete_licence", { acronym: "CC-BY", licenceVersion: "4.0" });
+    assert.deepEqual(ask.json.usedBy.map((u: any) => u.uid), ["dr1"]);
+    const refused = await call("collectory_delete_licence", { acronym: "CC-BY", licenceVersion: "4.0", confirm: true });
+    assert.match(refused.text, /1 data resources use CC-BY 4.0 \(dr1\)/);
+    assert.equal(fake.state.licences.size, 1);
+    fake.state.entities.get("dr1")!["licenseType"] = "CC-BY-NC";
+    const a = (await call("collectory_audit")).json;
+    assert.ok(a.findings.some((f: any) => f.uid === "dr1" && /not in the licence vocabulary/.test(f.problem)), JSON.stringify(a.findings));
+    const ok = await call("collectory_delete_licence", { acronym: "CC-BY", licenceVersion: "4.0", confirm: true });
+    assert.equal(ok.json.deleted, true, ok.text);
   });
 
   it("delete checks dependencies first", async () => {

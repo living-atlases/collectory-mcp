@@ -86,7 +86,7 @@ export function createServer(deps: ServerDeps): McpServer {
       );
       // /ws/contacts/0 needs the same rights as a write (ROLE_EDITOR/ROLE_ADMIN or the scope): "no such id" (400) means accepted.
       const probe = await client.raw("/ws/contacts/0", { user: "optional" }).catch((e: Error) => e);
-      const writes = probe instanceof Error ? { ok: false, error: probe.message } : { ok: probe.status < 500 && ![301, 302, 401, 403].includes(probe.status), status: probe.status, ...(probe.status >= 500 ? { error: "collectory failed while checking the credentials (6.0.x does with anonymous callers)" } : {}) };
+      const writes = probe instanceof Error ? { ok: false, error: probe.message } : { ok: probe.status < 500 && ![301, 302, 401, 403].includes(probe.status), status: probe.status, ...(probe.status >= 500 ? { error: "collectory failed while checking the credentials (6.0.x does with anonymous callers; a collectory that has just started may still be migrating its database)" } : {}) };
       let admin: unknown = { configured: client.hasSession };
       if (client.hasSession) admin = await client.page("/manage/list").then(
         () => ({ configured: true, ok: true }),
@@ -209,6 +209,34 @@ export function createServer(deps: ServerDeps): McpServer {
       return preview ? { dryRun: true, ...r } : r;
     },
   );
+
+  // ---------------- licences ----------------
+
+  const licence = {
+    acronym: z.string().min(1).max(200).describe('e.g. "CC-BY"; what data resources put in licenseType'),
+    licenceVersion: z.string().min(1).max(200).describe('e.g. "4.0"'),
+    name: z.string().min(1).max(200),
+    url: z.string().url(),
+    imageUrl: z.string().url().optional(),
+  };
+  tool(
+    "collectory_save_licence",
+    "write",
+    "Add a licence to the vocabulary, or update the one with the same acronym and version (admin form, needs a person's login). Refuses near-duplicates (same url, or same acronym with another version) unless allowSimilar",
+    { ...licence, allowSimilar: z.boolean().default(false), dryRun, confirm },
+    async (a) => {
+      const input = { acronym: a.acronym, licenceVersion: a.licenceVersion, name: a.name, url: a.url, imageUrl: a.imageUrl };
+      if (mustConfirm(a)) return { dryRun: true, ...(await wf.planLicence(input)) };
+      return wf.saveLicence(input, a.allowSimilar);
+    },
+  );
+
+  tool("collectory_delete_licence", "destructive", "Remove a licence from the vocabulary (needs ROLE_ADMIN). Refuses while data resources use it unless force:true", { acronym: z.string(), licenceVersion: z.string(), force: z.boolean().default(false), confirm }, async (a) => {
+    const users = await wf.licenceUsers(a.acronym, a.licenceVersion);
+    const ask = confirmOnly(a, `delete the licence ${a.acronym} ${a.licenceVersion}${users.length ? `, used by ${users.length} data resources` : ""}`);
+    if (ask) return { ...ask, usedBy: users };
+    return wf.deleteLicence(a.acronym, a.licenceVersion, a.force);
+  });
 
   // ---------------- IPT ----------------
 

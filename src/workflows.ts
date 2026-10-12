@@ -468,6 +468,89 @@ export class Workflows {
     return { ...plan, saved: true, contactId: id };
   }
 
+  // ---------------- licences ----------------
+
+  /** The licence vocabulary with the admin ids (from /licence/list, needs a person's login). */
+  async licenceRows(): Promise<Array<LicenceInput & { id: string }>> {
+    const { html } = await this.client.page("/licence/list?max=100");
+    const $ = cheerio.load(html);
+    return $("table tbody tr")
+      .toArray()
+      .map((tr) => {
+        const td = $(tr).find("td");
+        const id = $(td[0]).find("a").attr("href")?.match(/\/licence\/show\/(\d+)/)?.[1] ?? "";
+        const text = (i: number) => $(td[i]).text().replace(/\s+/g, " ").trim();
+        return { id, name: text(0), url: text(1), acronym: text(2), licenceVersion: text(3), imageUrl: $(td[4]).find("img").attr("src") };
+      })
+      .filter((r) => r.id);
+  }
+
+  /**
+   * The licence vocabulary with acronyms and versions. 6.x's web service has them; 5.x's has only name and url, so
+   * there the admin list (a person's login) is read instead.
+   */
+  async licenceList(): Promise<Array<{ name: string; url?: string; acronym?: string; version?: string; imageUrl?: string }>> {
+    const ws = await this.client.licences();
+    if (ws.every((l) => l.acronym !== undefined)) return ws;
+    return (await this.licenceRows()).map((r) => ({ name: r.name, url: r.url, acronym: r.acronym, version: r.licenceVersion, imageUrl: r.imageUrl }));
+  }
+
+  /** Create or update a licence (matched by acronym + version). Refuses near-duplicates such as 3.0 vs 3.x (#289). */
+  async planLicence(input: LicenceInput) {
+    const errors: string[] = [];
+    for (const k of ["acronym", "name", "licenceVersion", "url"] as const) if (!input[k]?.trim()) errors.push(`${k} is required`);
+    for (const [k, v] of Object.entries(input)) if (typeof v === "string" && v.length > 200) errors.push(`${k} is ${v.length} characters, the form allows 200`);
+    for (const k of ["url", "imageUrl"] as const) if (input[k] && !/^https?:\/\//.test(input[k]!)) errors.push(`${k} must be an http(s) URL`);
+    if (errors.length) throw new Error(errors.join("; "));
+    const all = await this.licenceList();
+    const key = (a?: string, v?: string) => `${(a ?? "").trim().toLowerCase()}|${(v ?? "").trim().toLowerCase()}`;
+    const existing = all.find((l) => l.acronym !== undefined && key(l.acronym, l.version) === key(input.acronym, input.licenceVersion));
+    const similar = all.filter((l) => l !== existing && ((l.url && l.url === input.url) || (l.acronym && l.acronym.toLowerCase() === input.acronym.toLowerCase())));
+    const changes = existing ? (["name", "url", "imageUrl"] as const).filter((k) => (input[k] ?? "") !== ((existing as Record<string, unknown>)[k] ?? "")).map((k) => ({ field: k, from: (existing as Record<string, unknown>)[k] ?? null, to: input[k] ?? null })) : [];
+    return { action: existing ? "update" : "create", licence: input, ...(existing ? { current: existing, changes } : {}), ...(similar.length ? { similar, warning: "similar licences already exist (same url, or the same acronym with another version): make sure this is not a duplicate (#289)" } : {}) };
+  }
+
+  async saveLicence(input: LicenceInput, allowSimilar: boolean) {
+    const plan = await this.planLicence(input);
+    if (plan.similar && plan.action === "create" && !allowSimilar) throw new Error(`${plan.warning}: ${plan.similar.map((l) => `${l.acronym ?? l.name} ${l.version ?? ""}`.trim()).join(", ")}. Pass allowSimilar:true if the user confirms it is a different licence`);
+    if (plan.action === "update" && !plan.changes?.length) return { ...plan, saved: false, message: "nothing changes" };
+    const fields = { name: input.name, acronym: input.acronym, licenceVersion: input.licenceVersion, url: input.url, imageUrl: input.imageUrl ?? "" };
+    let res;
+    if (plan.action === "create") {
+      const { url, html } = await this.client.page("/licence/create");
+      const form = findForm(html, url, { action: /\/save$/ });
+      res = await this.client.submit(form.action, fill(form, fields, form.submits.has("create") ? "create" : undefined));
+    } else {
+      const row = (await this.licenceRows()).find((r) => r.acronym.toLowerCase() === input.acronym.toLowerCase() && r.licenceVersion.toLowerCase() === input.licenceVersion.toLowerCase());
+      if (!row) throw new Error(`cannot find licence ${input.acronym} ${input.licenceVersion} in the admin list`);
+      const { url, html } = await this.client.page(`/licence/edit/${row.id}`);
+      const form = findForm(html, url, { submit: "_action_update" });
+      res = await this.client.submit(form.action, fill(form, fields, "_action_update"));
+    }
+    const { errors, messages } = pageMessages(res.html);
+    const now = (await this.licenceList()).find((l) => (l.acronym ?? "").toLowerCase() === input.acronym.toLowerCase() && (l.version ?? "").toLowerCase() === input.licenceVersion.toLowerCase());
+    if (errors.length) throw new Error(`collectory refused the licence: ${errors.join("; ")}`);
+    return { ...plan, saved: true, messages, verified: !!now && now.name === input.name && now.url === input.url, now: now ?? null };
+  }
+
+  /** Data resources that use a licence (licenseType = acronym and licenseVersion = version). */
+  async licenceUsers(acronym: string, version: string) {
+    const drs = await this.resources((await this.client.list("dataResource")).map((d) => d.uid));
+    return drs.filter((d) => String(d["licenseType"] ?? "").toLowerCase() === acronym.toLowerCase() && String(d["licenseVersion"] ?? "").toLowerCase() === version.toLowerCase()).map((d) => ({ uid: d["uid"], name: d["name"] }));
+  }
+
+  async deleteLicence(acronym: string, version: string, force: boolean) {
+    const users = await this.licenceUsers(acronym, version);
+    if (users.length && !force) throw new Error(`${users.length} data resources use ${acronym} ${version} (${users.slice(0, 10).map((u) => u.uid).join(", ")}${users.length > 10 ? "…" : ""}): change them first, or pass force:true`);
+    const row = (await this.licenceRows()).find((r) => r.acronym.toLowerCase() === acronym.toLowerCase() && r.licenceVersion.toLowerCase() === version.toLowerCase());
+    if (!row) throw new Error(`cannot find licence ${acronym} ${version} in the admin list`);
+    const { url, html } = await this.client.page(`/licence/show/${row.id}`);
+    const form = findForm(html, url, { submit: "_action_delete" });
+    const res = await this.client.submit(form.action, fill(form, {}, "_action_delete"));
+    const gone = !(await this.licenceList()).some((l) => (l.acronym ?? "").toLowerCase() === acronym.toLowerCase() && (l.version ?? "").toLowerCase() === version.toLowerCase());
+    return { acronym, version, deleted: gone, ...pageMessages(res.html), ...(users.length ? { leftWithoutLicence: users } : {}) };
+  }
+
   // ---------------- audit ----------------
 
   /** Read-only checks across the registry: what the wiki says to check by hand with SQL or Solr facets. */
@@ -476,6 +559,7 @@ export class Workflows {
     const findings: Array<{ uid: string; name?: unknown; problem: string }> = [];
     const drList = (await this.client.list("dataResource")).slice(0, limit);
     const drs = await this.resources(drList.map((d) => d.uid));
+    const vocabulary = new Set((await this.licenceList().catch(() => [])).map((l) => (l.acronym ?? "").toLowerCase()).filter(Boolean));
     let hiddenUrls = 0;
     for (const dr of drs) {
       const uid = String(dr["uid"]);
@@ -488,6 +572,7 @@ export class Workflows {
           for (const p of checkConnectionParameters({ ...cp, url: cp.url ?? "hidden://" }, type)) if (!p.includes("hidden://")) findings.push({ uid, name: dr["name"], problem: `connection parameters: ${p}` });
         }
         if (!dr["licenseType"]) findings.push({ uid, name: dr["name"], problem: "no licence" });
+        else if (vocabulary.size && !vocabulary.has(String(dr["licenseType"]).toLowerCase())) findings.push({ uid, name: dr["name"], problem: `licence "${dr["licenseType"]}" is not in the licence vocabulary (filters and GBIF sharing will not recognise it, #264)` });
         if (!dr["dataProvider"]) findings.push({ uid, name: dr["name"], problem: "no data provider" });
       }
       if (dr["websiteUrl"] && !/^https?:\/\//.test(String(dr["websiteUrl"]))) findings.push({ uid, name: dr["name"], problem: `websiteUrl "${dr["websiteUrl"]}" does not start with http(s) (saves fail, #306)` });
@@ -535,6 +620,14 @@ export class Workflows {
       return out;
     }
   }
+}
+
+export interface LicenceInput {
+  acronym: string;
+  name: string;
+  licenceVersion: string;
+  url: string;
+  imageUrl?: string;
 }
 
 export interface RepatriationQuery {

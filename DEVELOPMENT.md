@@ -62,6 +62,7 @@ MCP client ──stdio or Streamable HTTP──▶ collectory-mcp ──HTTP─�
 | `collectory_gbif_register` | `/{entity}/registerGBIF|updateGBIF|deleteGBIF/{uid}` | write, confirm (admin) |
 | `collectory_gbif_health`, `collectory_gbif_organizations`, `collectory_gbif_import_organization` | `/gbif/healthCheck`, `/dataProvider/searchForOrganizations`, `importFromOrganization` | read / write (admin) |
 | `collectory_gbif_sync_all` | `/ws/syncGBIF` | destructive, confirm |
+| `collectory_save_licence`, `collectory_delete_licence` | `/licence/list|create|edit|show` admin forms, verified with `/ws/licence` | write, dry run by default / destructive, confirm (admin) |
 
 Sources for the operations: the LA wiki (Data-mappings, Data-Hub, Collectory-entities, Other-ways-to-add-data-resource,
 Upload-data, Data-ingestion, Data-Removing, Securing-Collectory-Uploads, Troubleshooting), ALA's data load checklist
@@ -118,6 +119,18 @@ Found while running against a real 6.3.0 (the integration harness):
     which hub edits never evict. The MCP reads the hubs themselves.
 17. **A delete can answer before it is committed**: a GET right after `DELETE /ws/…` may still return the entity.
 18. **`POST /ws/find/{entity}` answers an array of JSON strings**, not objects (#253, kept for compatibility).
+19. **collectory answers requests before Liquibase has finished migrating the schema**: right after start, queries on
+    tables still being migrated fail with 500 (`Unknown column contact0_.organization_name`). `harness/up.sh` waits for
+    an authenticated contacts query; `collectory_health` mentions it on a 500.
+20. **Pages guarded only by `@PermissionRequired` (licences, data resources…) send an anonymous browser to the public
+    map** (`/`, the URL mapping of `public/map`) instead of starting the login, and so do 6.x's error pages: a show page
+    that fails to render redirects to `/` too. The MCP logs in when an admin page bounces to `/` before it has a session.
+21. **The licence edit and show forms post to `/ws/licence`** (Grails reverse-maps `licence/index` there) with
+    `_action_update`/`_action_delete`, so a browser session is needed on a `/ws/` URL. The licence vocabulary has no
+    uniqueness (3.0 vs 3.x duplicates, #289); 5.1.1's `/ws/licence` has no acronym or version, so the MCP reads the
+    admin list there.
+22. **Every data resource show page fails** when `gbifLicenceMappingUrl` points to a missing file (the default,
+    `default-gbif-licence-mapping.json`, which ala-install deploys); `null` uses the built-in mapping.
 
 What would make this safe by design: a JSON API for provider maps, licences, consumers and hub members accepting the
 same scope as the other writes; server-side validation of connection parameters; a dry-run mode for the IPT scan;
@@ -135,14 +148,15 @@ transport already gives the "nothing to install" option. The findings above are 
 | `test/units.test.ts` | — | field rules, connection parameter checks, form parsing and fail-closed filling, CSV and IPT RSS parsing, config, redaction |
 | `test/mcp-e2e.test.ts` | fake collectory 6.3.0 (`test/helpers/fake-collectory.ts`) | every workflow over MCP: previews write nothing, merges keep data, conflicts and hidden URLs are refused, form lane with a session, machine token refused on forms, repatriation posts only the chosen rows, secrets masked, 6.0.0 fallback |
 | `test/stdio.test.ts` | fake collectory | the server as an MCP client starts it |
-| `test/integration/collectory.test.ts` | a real collectory | anonymous: version, refusal; with JWTs from the test issuer and a person's login: create/update, code mapping + lookup + conflict, connection parameters (admin vs editor), hub members by web service and by form (machine and user tokens refused there), record consumers, contacts, delete with dependencies, IPT preview and scan (with and without create), GBIF preview, repatriation search, GBIF organisations, audit |
+| `test/integration/collectory.test.ts` | a real collectory | anonymous: version, refusal; with JWTs from the test issuer and a person's login: create/update, code mapping + lookup + conflict, connection parameters (admin vs editor), hub members by web service and by form (machine and user tokens refused there), record consumers, contacts, delete with dependencies, IPT preview and scan (with and without create), GBIF preview, repatriation search, GBIF organisations, licences (create, update, near-duplicate, delete), audit |
 
 The fake implements the behaviour taken from the 6.3.0 code (CrudService, PermissionInterceptor, the GSP field names).
 The guards were mutation-checked: disabling each of the hidden-url refusal, the code merge, the conflict check, the
 repatriation row selection, the form fail-closed rule, the dry-run default, the public-map denial, the login-redirect
 detection, the delete dependency check (and its reading of the hubs instead of the stale `hubMembership`), the delete
-retry, the hub reindex list, the `/ws/find` string parsing and the -1 coordinates of a new collection makes at least
-one test fail.
+retry, the hub reindex list, the `/ws/find` string parsing, the -1 coordinates of a new collection, the licence
+near-duplicate, in-use and vocabulary checks, the login on a bounce to the public map, the session on the `/ws/licence`
+form post and the 5.x licence fallback makes at least one test fail.
 
 ### Integration harness
 

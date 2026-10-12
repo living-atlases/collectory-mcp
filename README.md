@@ -27,7 +27,9 @@ It works like its siblings [spatial-mcp](https://github.com/living-atlases/spati
   organisations as data providers; check the GBIF sharing summary.
 - **Everyday edits**: create institutions, collections, providers and resources, change fields (with a preview of each
   change), add contacts, check what refers to an entity before deleting it.
-- **Find problems**: resources without licence or unique key terms, broken website URLs, hub members that no longer
+- **Licences**: add or update the licences resources can choose, refusing near-duplicates (3.0 vs 3.x), and refuse to
+  delete one that resources still use.
+- **Find problems**: resources without licence (or with one outside the vocabulary) or unique key terms, broken website URLs, hub members that no longer
   exist, ambiguous code mappings, collections nothing maps to.
 
 ## Before you start
@@ -38,8 +40,8 @@ It works like its siblings [spatial-mcp](https://github.com/living-atlases/spati
   - **Web service changes** (entities, code mappings, data resource hub members, connection parameters, contacts, IPT
     and GBIF scans): an access token of a user with `ROLE_EDITOR`/`ROLE_ADMIN`, or a machine client whose token
     carries the scope collectory expects (`ala/internal` by default). On 5.1.x, the legacy API key also works.
-  - **Admin pages** (hub institutions and collections, record consumers, GBIF registration, repatriation, creating
-    resources from an IPT): a **person's** account with `ROLE_EDITOR`/`ROLE_ADMIN`, which the server uses to log in
+  - **Admin pages** (hub institutions and collections, record consumers, licences, GBIF registration, repatriation,
+    creating resources from an IPT): a **person's** account with `ROLE_EDITOR`/`ROLE_ADMIN`, which the server uses to log in
     like a browser. collectory ignores tokens on those pages.
 
 ## Install
@@ -118,7 +120,8 @@ COLLECTORY_URL=https://collections.example.org COLLECTORY_USERNAME=you@example.o
 `collectory-mcp-http` (or the Docker image) serves the same tools over Streamable HTTP at `/mcp`, stateless, with the
 caller's own Bearer token forwarded to collectory and never stored. Run it next to collectory behind the same proxy.
 Limitation: collectory's admin pages ignore tokens, so over HTTP only the web service tools work (everything except hub
-institutions/collections, record consumers, GBIF registration and repatriation, and creating resources from an IPT).
+institutions/collections, record consumers, licences, GBIF registration and repatriation, and creating resources from
+an IPT).
 
 ## More
 

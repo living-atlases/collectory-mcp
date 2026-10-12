@@ -28,6 +28,9 @@ export class CollectoryError extends Error {
 /** Where a request lands when it is not logged in (collectory's own /login, the auth server, CAS). */
 const LOGIN_PATH = /\/(login|logout|callback|authorize)\b|oidc|oauth|\/cas\//i;
 
+/** Where 6.x PermissionInterceptor sends a caller without the role (public/map, which UrlMappings maps to "/"). */
+const PUBLIC_MAP = (pathname: string) => pathname === "/" || /\/public\/map$/.test(pathname);
+
 /** Pages behind @PermissionRequired(roles) only: a person's login, never a machine token. */
 export const isAdminPage = (path: string) => !path.startsWith("/ws/");
 
@@ -73,8 +76,11 @@ export interface RawOptions {
   accept?: string;
   /** Send credentials: true always, "optional" only when configured and without starting a login. */
   user?: boolean | "optional";
-  /** Also send the login session on a web service (5.x checks the session's role on some of them). */
-  withSession?: boolean;
+  /**
+   * Also send the login session on a web service (5.x checks the session's role on some of them); "only" sends just
+   * the session, as a browser would (admin forms whose action is under /ws/, such as 6.x's licence edit form).
+   */
+  withSession?: boolean | "only";
 }
 
 export interface SaveResult {
@@ -210,7 +216,8 @@ export class CollectoryClient {
     return parseCsv(await this.text("/ws/codeMapDump", { accept: "text/csv,*/*" }));
   }
 
-  licences(): Promise<Array<{ name: string; url?: string }>> {
+  /** The licence vocabulary (6.x also returns acronym, version and imageUrl). */
+  licences(): Promise<Array<{ name: string; url?: string; acronym?: string; version?: string; imageUrl?: string }>> {
     return this.json("/ws/licence");
   }
 
@@ -239,13 +246,13 @@ export class CollectoryClient {
   /** An admin page (HTML) as the logged-in person. */
   async page(path: string, hops = 0): Promise<{ url: string; html: string }> {
     if (hops > 10) throw new CollectoryError(path, 508, "too many redirects");
-    const res = await this.raw(path, { accept: "text/html", user: true });
+    const res = await this.raw(path, { accept: "text/html", user: true, withSession: "only" });
     const url = this.baseUrl + path;
     if (res.status >= 300 && res.status < 400) {
       const loc = new URL(res.headers.get("location") ?? "/", url);
       if (!loc.toString().startsWith(this.baseUrl + "/") || LOGIN_PATH.test(loc.pathname)) throw new CollectoryError(path, 401, `redirected to ${loc.origin}${loc.pathname} (not logged in)`);
       // 6.x PermissionInterceptor sends a caller without the role to the public map.
-      if (/\/public\/map$/.test(loc.pathname)) throw new CollectoryError(path, 403, "collectory sent the request to its public map: these credentials are not a person with ROLE_EDITOR/ROLE_ADMIN");
+      if (PUBLIC_MAP(loc.pathname)) throw new CollectoryError(path, 403, "collectory sent the request to its public map: these credentials are not a person with ROLE_EDITOR/ROLE_ADMIN (6.x also does this when the page fails: see collectory's log)");
       return this.page(loc.toString().slice(this.baseUrl.length), hops + 1);
     }
     const html = await res.text();
@@ -258,15 +265,16 @@ export class CollectoryClient {
     const abs = new URL(action, this.baseUrl + "/").toString();
     if (!abs.startsWith(this.baseUrl + "/")) throw new Error(`refusing to post a form to ${new URL(abs).origin}: it is not collectory (${this.baseUrl})`);
     const path = abs.slice(this.baseUrl.length);
-    const res = await this.raw(path, { method: "POST", form: body, accept: "text/html", user: true });
+    const res = await this.raw(path, { method: "POST", form: body, accept: "text/html", user: true, withSession: "only" });
     if (res.status >= 300 && res.status < 400) {
       const loc = new URL(res.headers.get("location") ?? "/", this.baseUrl + path);
       if (!loc.toString().startsWith(this.baseUrl)) throw new CollectoryError(path, 401, `redirected to ${loc.origin}${loc.pathname} (not logged in)`);
-      if (/\/public\/map$/.test(loc.pathname)) throw new CollectoryError(path, 403, "collectory sent the request to its public map: these credentials are not a person with ROLE_EDITOR/ROLE_ADMIN");
+      if (PUBLIC_MAP(loc.pathname)) throw new CollectoryError(path, 403, "collectory sent the request to its public map: these credentials are not a person with ROLE_EDITOR/ROLE_ADMIN (6.x also does this when the page fails: see collectory's log)");
       // The POST was accepted (Grails redirects after saving). The page it lands on can still fail to render (5.1.1's
-      // show pages do without biocache): report it, and let the caller verify through the web service.
+      // show pages do without biocache; 6.x's error page sends the browser to the public map, which reads as a 403
+      // here although the role was just accepted): report it, and let the caller verify through the web service.
       const landed = await this.page(loc.toString().slice(this.baseUrl.length)).catch((e: Error) => {
-        if (e instanceof CollectoryError && e.status >= 500) return { url: loc.toString(), html: "" };
+        if (e instanceof CollectoryError && (e.status >= 500 || e.status === 403)) return { url: loc.toString(), html: "" };
         throw e;
       });
       return { url: landed.url, status: res.status, html: landed.html };
@@ -292,7 +300,7 @@ export class CollectoryClient {
     const send = async () => {
       const headers: Record<string, string> = { Accept: o.accept ?? "application/json" };
       // Admin pages with a session configured use the session: tokens are ignored there anyway.
-      if (o.user && (!session || o.withSession)) Object.assign(headers, await this.auth.headers({ interactive: o.user === true }).catch((e) => (o.user === true ? Promise.reject(e) : {})));
+      if (o.user && (!session || o.withSession === true)) Object.assign(headers, await this.auth.headers({ interactive: o.user === true }).catch((e) => (o.user === true ? Promise.reject(e) : {})));
       const cookie = o.user ? session?.cookieFor(url) : undefined;
       if (cookie) headers["Cookie"] = cookie;
       let body: BodyInit | undefined;
@@ -308,11 +316,17 @@ export class CollectoryClient {
       return res;
     };
     const res = await send();
-    if (o.user && session && this.needsLogin(res)) {
+    // Pages guarded only by @PermissionRequired send an anonymous caller to the public map rather than the login.
+    if (o.user && session && (this.needsLogin(res) || (!session.loggedIn && this.toPublicMap(res)))) {
       await session.login(`${this.baseUrl}/manage/list`);
       return send();
     }
     return res;
+  }
+
+  private toPublicMap(res: Response): boolean {
+    const loc = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
+    return !!loc && PUBLIC_MAP(new URL(loc, this.baseUrl).pathname);
   }
 
   /** 401/403, or a redirect away from collectory or to a login page. */

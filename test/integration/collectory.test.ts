@@ -246,6 +246,20 @@ describe("real collectory: writes with JWTs from the test issuer", { skip: (!URL
     assert.equal(o.isError, false, o.text);
   });
 
+  it("licences: create, update by acronym + version, refuse a near-duplicate, delete", async () => {
+    const acronym = `MCP-IT-${stamp}`.toUpperCase();
+    const url = `https://example.org/licences/${stamp}`;
+    const c = await admin("collectory_save_licence", { acronym, licenceVersion: "1.0", name: "CI licence", url, dryRun: false, confirm: true });
+    assert.equal(c.json?.verified, true, c.text);
+    const u = await admin("collectory_save_licence", { acronym, licenceVersion: "1.0", name: "CI licence, renamed", url, dryRun: false, confirm: true });
+    assert.equal(u.json?.action, "update", u.text);
+    assert.equal(u.json?.verified, true, u.text);
+    const dup = await admin("collectory_save_licence", { acronym, licenceVersion: "1.x", name: "CI licence again", url, dryRun: false, confirm: true });
+    assert.match(dup.text, /#289/);
+    const d = await admin("collectory_delete_licence", { acronym, licenceVersion: "1.0", confirm: true });
+    assert.equal(d.json?.deleted, true, d.text);
+  });
+
   it("audit runs over the whole registry", async () => {
     const a = await m2m("collectory_audit", { limit: 200 });
     assert.equal(a.isError, false, a.text);
