@@ -53,7 +53,8 @@ jobs:
           COLLECTORY_WAR: /dev/null
 
   public-demo:
-    # Anonymous checks against the LA demo stack; skipped while it is down.
+    # Anonymous checks against the LA demo stack. Jenkins jobs redeploy it (it then redirects to an error page for a
+    # while), so wait up to 10 minutes for it before skipping.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,7 +65,11 @@ jobs:
       - run: npm ci
       - id: demo
         run: |
-          if curl -fsS -m 30 -H "Accept: application/json" https://collections.l-a.site/ws/dataHub | grep -q "^\s*\["; then echo "up=true" >> "$GITHUB_OUTPUT"; else echo "up=false" >> "$GITHUB_OUTPUT"; echo "::notice::collections.l-a.site is not available: skipped"; fi
+          for i in $(seq 1 20); do
+            if curl -fsS -m 30 -H "Accept: application/json" https://collections.l-a.site/ws/dataHub | grep -q "^\s*\["; then echo "up=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+            sleep 30
+          done
+          echo "up=false" >> "$GITHUB_OUTPUT"; echo "::notice::collections.l-a.site is not available after 10 minutes (a Jenkins redeploy?): skipped"
       - if: steps.demo.outputs.up == 'true'
         run: npm run test:integration
         env:
