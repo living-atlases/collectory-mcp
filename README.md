@@ -53,9 +53,16 @@ It works like its siblings [spatial-mcp](https://github.com/living-atlases/spati
   - **Web service changes** (entities, code mappings, data resource hub members, connection parameters, contacts, IPT
     and GBIF scans): an access token of a user with `ROLE_EDITOR`/`ROLE_ADMIN`, or a machine client whose token
     carries the scope collectory expects (`ala/internal` by default). On 5.1.x, the legacy API key also works.
+    - The simplest no-password setup: put a **personal access token** in `COLLECTORY_TOKEN` (for example one minted
+      by a token portal such as [ala-tokens-portal](https://github.com/AtlasOfLivingAustralia/ala-tokens-portal),
+      where ALA runs one, at <https://tokens.ala.org.au/>). Nothing secret then lives in the MCP config beyond the
+      token itself. **This only covers the web-service tools below**, not the admin pages: collectory accepts a
+      Bearer token on `/ws/*` but gates the admin UI with an interactive OIDC login, and ignores the token there (so
+      a token alone cannot drive the admin-page tools).
   - **Admin pages** (hub institutions and collections, record consumers, licences, GBIF registration, repatriation,
-    creating resources from an IPT, data file uploads): a **person's** account with `ROLE_EDITOR`/`ROLE_ADMIN`, which the server uses to log in
-    like a browser. collectory ignores tokens on those pages.
+    creating resources from an IPT, data file uploads, taxonomy hints, images): a **person's** account with
+    `ROLE_EDITOR`/`ROLE_ADMIN`, which the server uses to log in like a browser (`COLLECTORY_USERNAME` +
+    `set-password`). A Bearer token is not enough here, whatever its roles — collectory ignores tokens on those pages.
 
 ## Install
 
@@ -100,7 +107,7 @@ COLLECTORY_URL=https://collections.example.org COLLECTORY_USERNAME=you@example.o
 |---|---|
 | `COLLECTORY_URL` | collectory base URL, without `/ws` (default: the LA demo) |
 | `COLLECTORY_READONLY=1` | refuse every change (previews still work) |
-| `COLLECTORY_TOKEN` | a Bearer access token |
+| `COLLECTORY_TOKEN` | a Bearer access token (e.g. a personal token from a token portal). Covers the web-service tools only, not the admin pages |
 | `COLLECTORY_OIDC_ISSUER` or `_TOKEN_URL`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_SCOPE` | client credentials grant (token cached and renewed); `_USERNAME`/`_PASSWORD` for the password grant |
 | `COLLECTORY_API_KEY` | legacy API key (5.1.x) |
 | `COLLECTORY_USERNAME` | person for the admin pages (password from `set-password`) |
