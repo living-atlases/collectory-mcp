@@ -339,6 +339,29 @@ describe("real collectory: writes with JWTs from the test issuer", { skip: (!URL
     assert.ok(!again.problems.some((p: any) => p.element.startsWith("dataset/coverage") || p.element === "dataset/methods"), JSON.stringify(again.problems));
   });
 
+  it("taxonomy hints: setting a range through the form fixes the empty generalTaxonomicCoverage (admin lane)", async () => {
+    const dr = await create("dataResource", { name: `mcp-it hints ${stamp}`, resourceType: "records" });
+    const set = await admin("collectory_set_taxonomy_hints", { uid: dr, coverage: [{ rank: "kingdom", name: "Plantae" }], range: ["Plantae"], dryRun: false, confirm: true });
+    assert.equal(set.json?.verified, true, set.text);
+    const read = (await admin("collectory_taxonomy_hints", { uid: dr })).json;
+    assert.deepEqual(read.coverage, [{ rank: "kingdom", name: "Plantae" }], read.text ?? JSON.stringify(read));
+    assert.deepEqual(read.range, ["Plantae"]);
+    const eml = (await m2m("collectory_eml_check", { uids: [dr] })).json.resources[0];
+    assert.ok(!eml.problems.some((p: any) => p.element?.includes("generalTaxonomicCoverage")), JSON.stringify(eml.problems));
+  });
+
+  it("image: a logo is uploaded through the admin form with a sanitised filename, then removed", async () => {
+    const dr = await create("dataResource", { name: `mcp-it image ${stamp}`, resourceType: "records" });
+    const dir = mkdtempSync(join(tmpdir(), "collectory-mcp-it-img-"));
+    const png = join(dir, "la logo.png");
+    writeFileSync(png, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
+    const u = await admin("collectory_set_image", { uid: dr, file: png, target: "logoRef", caption: "CI logo", dryRun: false, confirm: true });
+    assert.equal(u.json?.verified, true, u.text);
+    assert.equal(u.json.now.filename, "la logo.png", "the base name is kept");
+    const rm = await admin("collectory_remove_image", { uid: dr, target: "logoRef", confirm: true });
+    assert.equal(rm.json?.removed, true, rm.text);
+  });
+
   it("GBIF: preview compares with the real GBIF API; repatriation search and organisations read GBIF through collectory", async () => {
     const dp = await create("dataProvider", { name: `mcp-it GBIF ${stamp}` });
     await create("dataResource", { name: `mcp-it Flora d'Andorra ${stamp}`, resourceType: "records", dataProvider: { uid: dp }, guid: "a8adde1c-1d66-4ad0-846f-cdf59fc4cb0f" });

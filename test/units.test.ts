@@ -6,6 +6,7 @@ import { checkConnectionParameters, planEntityWrite, same } from "../src/entitie
 import { FormContractError, fill, findForm, pageMessages } from "../src/forms.ts";
 import { Redactor } from "../src/redact.ts";
 import { checkEml, type Context } from "../src/eml-check.ts";
+import { ImageUpload } from "../src/images.ts";
 import { parseEml, parseMeta } from "../src/upload.ts";
 import { readFileSync } from "node:fs";
 import { cachedSchemas } from "./helpers/gbif-schemas.ts";
@@ -178,6 +179,18 @@ describe("code mapping overlap", () => {
   });
 });
 
+describe("image filename sanitising (collectory does not, #272)", () => {
+  it("keeps only the base name, strips separators and non-Latin-1, refuses empty", () => {
+    assert.equal(ImageUpload.safeName("/a/b/good.PNG"), "good.PNG");
+    assert.equal(ImageUpload.safeName("../../etc/passwd"), "passwd");
+    assert.equal(ImageUpload.safeName("a\\b\\logo.png"), "logo.png");
+    assert.equal(ImageUpload.safeName("..\\..\\x.png"), "x.png");
+    assert.equal(ImageUpload.safeName("café漢.png"), "café_.png");
+    assert.throws(() => ImageUpload.safeName("../../"), /safe filename/);
+    assert.throws(() => ImageUpload.safeName("..."), /safe filename/);
+  });
+});
+
 describe("zip and Darwin Core Archive parsing", () => {
   it("reads stored and deflated entries, and refuses what it cannot read", () => {
     for (const deflate of [false, true]) {
@@ -234,7 +247,7 @@ describe("EML check against the GBIF EML profile (real collectory output)", asyn
     assert.match(box.problems[0]!.fix, /6\.3\.0 and develop still do when the bounding box is incomplete/);
     const tax = await checkEml(fixture("6.3.0-taxonomy-hints.xml"), schemas, at());
     assert.deepEqual(byElement(tax.problems), ["dataset/coverage/taxonomicCoverage/generalTaxonomicCoverage"], "minLength and pattern: one problem");
-    assert.match(tax.problems[0]!.fix, /no range: add one in the admin UI/);
+    assert.match(tax.problems[0]!.fix, /no range: set one with collectory_set_taxonomy_hints/);
   });
 
   it("5.1.1: invalid whatever the data; the portal's own email comes from the config", { skip }, async () => {

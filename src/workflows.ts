@@ -8,6 +8,7 @@ type Ref = { uid: string; name?: string };
 
 const uidsOf = (v: unknown): string[] => (Array.isArray(v) ? v.map((x) => (typeof x === "string" ? x : String((x as Ref).uid))).filter(Boolean) : []);
 const uniq = <T>(a: T[]) => [...new Set(a)];
+
 const applyDelta = (current: string[], add: string[] = [], remove: string[] = []) => uniq([...current.filter((x) => !remove.includes(x)), ...add]);
 
 export interface Delta {
@@ -617,6 +618,71 @@ export class Workflows {
     const res = await this.client.submit(form.action, fill(form, {}, "_action_delete"));
     const gone = !(await this.licenceList()).some((l) => (l.acronym ?? "").toLowerCase() === acronym.toLowerCase() && (l.version ?? "").toLowerCase() === version.toLowerCase());
     return { acronym, version, deleted: gone, ...pageMessages(res.html), ...(users.length ? { leftWithoutLicence: users } : {}) };
+  }
+
+  // ---------------- taxonomy hints (form lane) ----------------
+
+  /**
+   * Taxonomy hints of an entity: the rank/name pairs (`coverage`) EmlRenderService turns into
+   * `taxonomicClassification`, and the `range` it turns into `generalTaxonomicCoverage`. Both are stored in the
+   * `taxonomyHints` JSON, writable only through the admin forms (`/{entity}/base`); the web service returns them
+   * read-only as `taxonomyCoverageHints`. Setting a range fixes the empty `<generalTaxonomicCoverage/>` the renderer
+   * writes otherwise (the EML then validates): see collectory_eml_check.
+   */
+  async taxonomyHints(uid: string) {
+    const pg = await this.client.get<Json>(uid);
+    const hints = await this.readHints(uid);
+    return { uid, name: pg["name"], coverage: hints.coverage, range: hints.range };
+  }
+
+  /**
+   * The web service exposes only `taxonomyCoverageHints` (the coverage), never the range or the raw `taxonomyHints`,
+   * so the hints are read from the admin forms, which need a login.
+   */
+  private async readHints(uid: string): Promise<{ coverage: Array<{ rank: string; name: string }>; range: string[] }> {
+    const e = entityOf(uid);
+    const [cov, ran] = await Promise.all([
+      this.client.page(`/${e}/edit/${uid}?page=/shared/editTaxonomyHints`),
+      this.client.page(`/${e}/edit/${uid}?page=/shared/taxonomicRange`),
+    ]);
+    const $c = cheerio.load(cov.html);
+    const coverage: Array<{ rank: string; name: string }> = [];
+    for (const el of $c('input[name^="rank_"]').toArray()) {
+      const i = ($c(el).attr("name") ?? "").slice(5);
+      const rank = $c(el).attr("value")?.trim();
+      const name = $c(`input[name="name_${i}"]`).attr("value")?.trim();
+      if (rank && name) coverage.push({ rank, name });
+    }
+    const range = (cheerio.load(ran.html)('input[name="range"]').attr("value") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    return { coverage, range };
+  }
+
+  async setTaxonomyHints(uid: string, o: { coverage?: Array<{ rank: string; name: string }>; range?: string[] }, apply: boolean) {
+    const e = entityOf(uid);
+    const pg = await this.client.get<Json>(uid, e);
+    const before = await this.readHints(uid);
+    const after = { coverage: o.coverage ?? before.coverage, range: o.range ?? before.range };
+    const plan = { uid, name: pg["name"], before, after, ...(same(before, after) ? { warning: "nothing changes" } : {}) };
+    if (!apply || same(before, after)) return plan;
+    if (o.coverage) {
+      const { url, html } = await this.client.page(`/${e}/edit/${uid}?page=/shared/editTaxonomyHints`);
+      const form = findForm(html, url, { submit: "_action_updateTaxonomyHints" });
+      const body = fill(form, {}, "_action_updateTaxonomyHints");
+      for (const n of [...body.keys()]) if (/^(rank|name)_\d+$/.test(n)) body.delete(n);
+      o.coverage.forEach((h, i) => {
+        if (!h.rank?.trim() || !h.name?.trim()) throw new Error(`taxonomy hint ${i} needs both a rank and a name`);
+        body.append(`rank_${i}`, h.rank.trim());
+        body.append(`name_${i}`, h.name.trim());
+      });
+      await this.client.submit(form.action, body);
+    }
+    if (o.range) {
+      const { url, html } = await this.client.page(`/${e}/edit/${uid}?page=/shared/taxonomicRange`);
+      const form = findForm(html, url, { submit: "_action_updateTaxonomicRange" });
+      await this.client.submit(form.action, fill(form, { range: o.range.join(",") }, "_action_updateTaxonomicRange"));
+    }
+    const now = await this.readHints(uid);
+    return { ...plan, saved: true, verified: same(now, after), now };
   }
 
   // ---------------- audit ----------------

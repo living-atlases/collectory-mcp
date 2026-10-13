@@ -124,7 +124,7 @@ export class EmlCheck {
         uid,
         name: dr["name"],
         valid: false,
-        problems: [{ severity: "error", message: `GET /ws/eml/${uid} -> ${e.status}: ${e.body.replace(/\s+/g, " ").slice(0, 300)}`, fix: parse ? "#310: the taxonomic hints are not valid JSON: fix them in the admin UI (Edit > Taxonomic hints), or upgrade to collectory 6.3.0 (#311)" : "see collectory's log; GBIF cannot read this resource's metadata" }],
+        problems: [{ severity: "error", message: `GET /ws/eml/${uid} -> ${e.status}: ${e.body.replace(/\s+/g, " ").slice(0, 300)}`, fix: parse ? "#310: the taxonomic hints are not valid JSON: rewrite them with collectory_set_taxonomy_hints, or upgrade to collectory 6.3.0 (#311)" : "see collectory's log; GBIF cannot read this resource's metadata" }],
         gbif,
       };
     }
@@ -228,7 +228,7 @@ function fixFor(element: string, path: string, message: string, c: Context): str
   if (element === "coverage")
     return "set geographicDescription with all four bounding coordinates, or beginDate and endDate (collectory_save_entity). Before 6.3.0 collectory writes an empty coverage when there is none (#318); 6.3.0 and develop still do when the bounding box is incomplete (westBoundingCoordinate without the other three)";
   if (/BoundingCoordinate$/.test(element)) return "set all four bounding coordinates (collectory_save_entity)";
-  if (element === "generalTaxonomicCoverage") return "the taxonomic hints have no range: add one in the admin UI (Edit > Taxonomic hints); collectory writes generalTaxonomicCoverage from it even when empty (6.3.0 and develop)";
+  if (element === "generalTaxonomicCoverage") return "the taxonomic hints have no range: set one with collectory_set_taxonomy_hints (range:[…]); collectory writes generalTaxonomicCoverage from it even when empty (6.3.0 and develop)";
   if (element === "citation" && /not expected/.test(message)) return renderer("writes the GBIF metadata in the wrong order");
   if (element === "citation") return emptyIn63("set citation (collectory_save_entity)");
   if (element === "rights" && path.includes("gbif")) return renderer("writes a rights element the GBIF profile does not have");

@@ -6,6 +6,7 @@ import type { Config } from "./config.ts";
 import { Redactor } from "./redact.ts";
 import { EmlCheck } from "./eml-check.ts";
 import { MappingCheck } from "./mapping-check.ts";
+import { ImageUpload } from "./images.ts";
 import { DataUpload } from "./upload.ts";
 import { Workflows } from "./workflows.ts";
 
@@ -187,6 +188,38 @@ export function createServer(deps: ServerDeps): McpServer {
         return up.upload(input);
       },
     );
+
+    const img = new ImageUpload(client);
+    tool(
+      "collectory_set_image",
+      "write",
+      "Upload a local image or logo to an entity (the admin page's image form; there is no web service for the file), or change its caption/attribution/copyright. The filename is sanitised before sending; collectory limits images to 200 KB",
+      {
+        uid: uid(),
+        file: z.string().optional().describe("Path of the image on this machine; omit to only change the metadata of the current one"),
+        target: z.enum(["imageRef", "logoRef"]).optional().describe("imageRef (default) or logoRef"),
+        caption: z.string().optional(),
+        attribution: z.string().optional(),
+        copyright: z.string().optional(),
+        dryRun,
+        confirm,
+      },
+      async (a) => {
+        const { dryRun: _d, confirm: _c, ...input } = a;
+        if (mustConfirm(a)) {
+          const { _file, ...plan } = await img.plan(input);
+          return { dryRun: true, ...plan };
+        }
+        return img.upload(input);
+      },
+    );
+
+    tool("collectory_remove_image", "destructive", "Remove an entity's image or logo", { uid: uid(), target: z.enum(["imageRef", "logoRef"]).optional(), confirm }, async (a) => {
+      const target = a.target ?? "imageRef";
+      const ask = confirmOnly(a, `remove the ${target} of ${a.uid}`);
+      if (ask) return ask;
+      return img.remove(a.uid, target);
+    });
   }
 
   tool("collectory_contacts", "read", "Contacts linked to an entity, with their role and flags (unpublished ones too, with a login)", { uid: uid() }, async (a) => {
@@ -298,6 +331,27 @@ export function createServer(deps: ServerDeps): McpServer {
     if (ask) return { ...ask, ...plan };
     return wf.removeContact(a.uid, a.email, true);
   });
+
+  tool("collectory_taxonomy_hints", "read", "The taxonomic coverage of an entity: the rank/name pairs and the taxonomic range (what collectory writes as the EML's taxonomicClassification and generalTaxonomicCoverage)", { uid: uid() }, async (a) => wf.taxonomyHints(a.uid));
+
+  tool(
+    "collectory_set_taxonomy_hints",
+    "write",
+    "Set an entity's taxonomic coverage through the admin forms (no web service): the rank/name pairs and/or the taxonomic range. Both replace what is there. Setting a range also fixes the empty <generalTaxonomicCoverage/> that makes the EML invalid (collectory_eml_check)",
+    {
+      uid: uid(),
+      coverage: z.array(z.object({ rank: z.string().min(1).describe("e.g. kingdom, phylum, class"), name: z.string().min(1) })).optional().describe("Replaces the rank/name pairs"),
+      range: z.array(z.string().min(1)).optional().describe("Taxa for generalTaxonomicCoverage; replaces the current range"),
+      dryRun,
+      confirm,
+    },
+    async (a) => {
+      if (!a.coverage && !a.range) throw new Error("give coverage and/or range");
+      const preview = mustConfirm(a);
+      const r = await wf.setTaxonomyHints(a.uid, { coverage: a.coverage, range: a.range }, !preview);
+      return preview ? { dryRun: true, ...r } : r;
+    },
+  );
 
   // ---------------- licences ----------------
 

@@ -56,6 +56,8 @@ MCP client ──stdio or Streamable HTTP──▶ collectory-mcp ──HTTP─�
 | `collectory_set_record_consumers` | `/{dataResource,dataProvider}/editConsumers/{uid}?source=co|in` → `…/base` `_action_updateConsumers` | write, dry run by default |
 | `collectory_set_connection_parameters` | `POST /ws/dataResource/{uid}` `connectionParameters` | write, dry run by default |
 | `collectory_update_contact`, `collectory_remove_contact` | `POST`/`DELETE /ws/{entity}/{uid}/contacts/{id}` | write, dry run by default / destructive, confirm |
+| `collectory_taxonomy_hints`, `collectory_set_taxonomy_hints` | `/{entity}/edit/{uid}?page=/shared/editTaxonomyHints` and `taxonomicRange` → `/{entity}/base` (`_action_updateTaxonomyHints`, `_action_updateTaxonomicRange`) | read / write, dry run by default (admin) |
+| `collectory_set_image` (stdio only: reads a local file), `collectory_remove_image` | `/{entity}/edit/{uid}?page=/shared/images` → multipart `/{entity}/image` (`_action_updateImages`, `_action_removeImage`) | write, dry run by default / destructive, confirm (admin) |
 | `collectory_add_contact` | `/ws/contacts/email/{e}`, `POST /ws/contacts`, `POST /ws/{entity}/{uid}/contacts/{id}` | write, dry run by default |
 | `collectory_ipt_preview` | the provider's IPT `rss.do` + `/ws/find/dataResource` | read |
 | `collectory_ipt_scan` | `/ws/ipt/scan/{dp}.json`; with `create`: `/dataProvider/iptScan` (admin page) | write, dry run by default |
@@ -203,10 +205,26 @@ schema, which collectory itself declares:
     its EML from the IPT (Flora d'Andorra). The fixes were checked round trip: `collectory_save_entity` with the
     coordinates and `methodStepDescription`, then the check again.
 
+Taxonomy hints, images and attributions (`ProviderGroupController`, form lane):
+
+33. **The taxonomic coverage and range have no web service.** `taxonomyHints` is a JSON of `coverage` (rank/name pairs,
+    written to the EML's `taxonomicClassification`) and `range` (written to `generalTaxonomicCoverage`), set only
+    through `/{entity}/base` (`_action_updateTaxonomyHints` with `rank_N`/`name_N`, `_action_updateTaxonomicRange` with
+    `range`). The web service returns the coverage read-only as `taxonomyCoverageHints` and never the range, so
+    `collectory_taxonomy_hints` reads both back from the edit forms (a login). Setting a range is the data-side fix for
+    the empty `<generalTaxonomicCoverage/>` of finding 31; `collectory_set_taxonomy_hints` does it and the round trip
+    (set, then `collectory_eml_check`) is in the integration suite.
+34. **The image/logo upload does not sanitise the filename.** `updateImages` only replaces non-Latin-1 characters; it
+    does not call `UploadPathHelper.sanitizeFilename` (which the data upload does), so a crafted name is stored and
+    served verbatim, outside the images directory (also in develop; relates to #272). `collectory_set_image` (stdio
+    only, like the data upload) sanitises the name itself, refuses path separators, and enforces the 200 KB limit before
+    sending. Attributions are written through the ordinary web service (`attributions`), so they need no form.
+
 What would make this safe by design: a JSON API for provider maps, licences, consumers and hub members accepting the
 same scope as the other writes; server-side validation of connection parameters; a dry-run mode for the IPT scan;
 POST (with CSRF protection) for the GBIF actions; the GBIF password out of the review page; an upload that keeps the
-connection parameters it is not given and leaves contacts alone when the file has no EML.
+connection parameters it is not given and leaves contacts alone when the file has no EML; a web service for the
+taxonomic coverage and range; and `sanitizeFilename` on the image upload.
 
 ### Why not a plugin inside collectory?
 
@@ -220,7 +238,8 @@ transport already gives the "nothing to install" option. The findings above are 
 | `test/units.test.ts` | — | the EML check on real collectory output (`test/fixtures/eml`: 5.1.1, 6.3.0, ALA's dr376), field rules, connection parameter checks, form parsing and fail-closed filling, CSV and IPT RSS parsing, config, redaction |
 | `test/mcp-e2e.test.ts` | fake collectory 6.3.0 (`test/helpers/fake-collectory.ts`) | every workflow over MCP: previews write nothing, merges keep data, conflicts and hidden URLs are refused, form lane with a session, machine token refused on forms, repatriation posts only the chosen rows, secrets masked, 6.0.0 fallback |
 | `test/stdio.test.ts` | fake collectory | the server as an MCP client starts it |
-| `test/integration/collectory.test.ts` | a real collectory | anonymous: version, refusal; with JWTs from the test issuer and a person's login: create/update, code mapping + lookup + conflict, connection parameters (admin vs editor), hub members by web service and by form (machine and user tokens refused there), record consumers, contacts (an unpublished one seen only with a login), delete with dependencies, data file upload (parameters kept, contacts per version), IPT preview and scan (with and without create), GBIF preview, repatriation search, GBIF organisations, licences (create, update, near-duplicate, delete), EML check, audit |
+| `test/integration/collectory.test.ts` | a real collectory | anonymous: version, refusal; with JWTs from the test issuer and a person's login: create/update, code mapping + lookup + conflict, connection parameters (admin vs editor), hub members by web service and by form (machine and user tokens refused there), record consumers, contacts (an unpublished one seen only with a login), delete with dependencies, data file upload (parameters kept, contacts per version), IPT preview and scan (with and without create), GBIF preview, repatriation search, GBIF organisations, licences (create, update, near-duplicate, delete), EML check, taxonomy hints and range round
+trip, image upload with a sanitised filename and removal, audit |
 
 The fake implements the behaviour taken from the 6.3.0 code (CrudService, PermissionInterceptor, the GSP field names).
 The guards were mutation-checked: disabling each of the hidden-url refusal, the code merge, the conflict check, the
@@ -237,7 +256,9 @@ the upload's stored parameters sent back, unknown parameters, unique key change,
 contact removal refusal, restore refused with an EML, contact restore, and cleared EML fields, and the EML check's
 local schema imports, schema hash comparison, duplicate-message merge, element paths, the fixes that depend on the
 collectory version and on the party, the #310 diagnosis, the contact warning and the GBIF source (collectory
-fingerprint, IPT) makes at least one test fail.
+fingerprint, IPT), and the taxonomy hints and range read back from the forms, the filename sanitising (base name,
+separators, non-Latin-1, leading dots), the image size limit and the duplicate file field, makes at least one test
+fail.
 
 ### Integration harness
 
@@ -269,5 +290,5 @@ carry no licence, so they are not copied here: the server and the tests download
 
 ## Not covered yet
 
-Creating ProviderMaps of an institution without a collection (fresh schemas refuse them), taxonomy hints, images and
-logos, attributions, temp data resources (sandbox), the OIDC browser login of spatial-mcp.
+Creating ProviderMaps of an institution without a collection (fresh schemas refuse them), temp data resources
+(sandbox), the OIDC browser login of spatial-mcp (admin pages reject a person's token on 5.1.1 and 6.3.0).

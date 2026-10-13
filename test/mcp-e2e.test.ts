@@ -309,6 +309,55 @@ describe("collectory-mcp over MCP against a fake collectory 6.3.0", () => {
     });
   });
 
+  describe("taxonomy hints and images (form lane)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "collectory-mcp-img-"));
+    const png = join(dir, "logo.png");
+    const big = join(dir, "big.png");
+    writeFileSync(png, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
+    writeFileSync(big, Buffer.alloc(200_001));
+
+    it("sets the taxonomic coverage and range through the forms, which fixes the empty generalTaxonomicCoverage", async () => {
+      fake.add("dataResource", { uid: "dr9", name: "Res" });
+      const { call } = await connect(fake, { token: "m2m-token", login: true });
+      const cov = [{ rank: "kingdom", name: "Plantae" }, { rank: "class", name: "Liliopsida" }];
+      const preview = await call("collectory_set_taxonomy_hints", { uid: "dr9", coverage: cov, range: ["Plantae", "Fungi"] });
+      assert.equal(preview.json.dryRun, true);
+      assert.deepEqual(preview.json.before, { coverage: [], range: [] });
+      const u = await call("collectory_set_taxonomy_hints", { uid: "dr9", coverage: cov, range: ["Plantae", "Fungi"], dryRun: false, confirm: true });
+      assert.equal(u.json.verified, true, u.text);
+      const read = (await call("collectory_taxonomy_hints", { uid: "dr9" })).json;
+      assert.deepEqual(read.coverage, cov);
+      assert.deepEqual(read.range, ["Plantae", "Fungi"]);
+      assert.deepEqual(JSON.parse(String(fake.state.entities.get("dr9")!["taxonomyHints"])), { coverage: [{ kingdom: "Plantae" }, { class: "Liliopsida" }], range: ["Plantae", "Fungi"] });
+      const rangeOnly = await call("collectory_set_taxonomy_hints", { uid: "dr9", range: ["Animalia"], dryRun: false, confirm: true });
+      assert.deepEqual(rangeOnly.json.after, { coverage: cov, range: ["Animalia"] }, "the unchanged coverage is kept in the plan");
+      assert.equal(rangeOnly.json.verified, true, rangeOnly.text);
+      assert.deepEqual((await call("collectory_taxonomy_hints", { uid: "dr9" })).json.coverage, cov, "changing only the range keeps the coverage");
+    });
+
+    it("uploads a logo, sanitising the filename, refuses a too-large image, and removes it", async () => {
+      fake.add("dataResource", { uid: "dr10", name: "Res" });
+      const { call } = await connect(fake, { token: "m2m-token", login: true });
+      const u = await call("collectory_set_image", { uid: "dr10", file: png, target: "logoRef", caption: "a logo", dryRun: false, confirm: true });
+      assert.equal(u.json.verified, true, u.text);
+      assert.equal(u.json.now.filename, "logo.png");
+      assert.equal(u.json.now.caption, "a logo");
+      const toobig = await call("collectory_set_image", { uid: "dr10", file: big });
+      assert.match(toobig.json.errors.join(), /200 KB/);
+      const rm = await call("collectory_remove_image", { uid: "dr10", target: "logoRef", confirm: true });
+      assert.equal(rm.json.removed, true, rm.text);
+      assert.equal(fake.state.entities.get("dr10")!["logoRef"], undefined);
+    });
+
+    it("image tools are stdio only (not offered over HTTP)", async () => {
+      const remote = await connect(fake, { token: "m2m-token", remote: true });
+      const names = (await remote.mcp.listTools()).tools.map((t) => t.name);
+      assert.ok(!names.includes("collectory_set_image"), "set_image offered over HTTP");
+      assert.ok(!names.includes("collectory_remove_image"), "remove_image offered over HTTP");
+      assert.ok(names.includes("collectory_set_taxonomy_hints"), "taxonomy hints use the form lane, available over HTTP");
+    });
+  });
+
   it("EML check: schema errors with their fix, the #310 failure, and where GBIF's metadata comes from", async (t) => {
     fake.state.schemaDir = await cachedSchemaDir();
     if (!fake.state.schemaDir) return t.skip("the GBIF EML profile schemas could not be downloaded");

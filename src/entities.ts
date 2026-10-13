@@ -25,7 +25,7 @@ const ELSEWHERE: Record<string, string> = {
   memberInstitutions: "collectory_set_hub_members (admin form)",
   memberCollections: "collectory_set_hub_members (admin form)",
   linkedRecordConsumers: "collectory_set_record_consumers (admin form)",
-  taxonomyHints: "the admin UI (Edit > Taxonomic hints)",
+  taxonomyHints: "collectory_set_taxonomy_hints",
   keywords: "the admin UI (not writable through the web service for this entity)",
   purpose: "the admin UI",
   suitableFor: "the admin UI",

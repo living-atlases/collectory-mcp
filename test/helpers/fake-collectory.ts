@@ -70,7 +70,7 @@ export const ADMIN_LOGIN = { username: "admin@example.org", password: "s3cret-pa
 /** A person without ROLE_EDITOR/ROLE_ADMIN. */
 export const USER_LOGIN = { username: "user@example.org", password: "user-pass-1" };
 const PREFIX: Record<string, string> = { institution: "in", collection: "co", dataProvider: "dp", dataResource: "dr", dataHub: "dh" };
-const JSON_FIELDS = ["connectionParameters", "contentTypes", "defaultDarwinCoreValues", "imageMetadata"];
+const JSON_FIELDS = ["connectionParameters", "contentTypes", "defaultDarwinCoreValues", "imageMetadata", "imageRef", "logoRef"];
 const BASE = ["guid", "name", "acronym", "phone", "email", "state", "pubShortDescription", "pubDescription", "techDescription", "notes", "isALAPartner", "focus", "attributions", "websiteUrl", "networkMembership", "altitude", "gbifRegistryKey", "latitude", "longitude"];
 const WRITABLE: Record<string, string[]> = {
   institution: [...BASE, "institutionType"],
@@ -411,6 +411,45 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
       return send(res, 200, page("role", `<form method="post" action="/${editRole[1]}/base"><input type="hidden" name="contactForId" value="${l.id}"><input type="text" name="role" value="${l.role ?? ""}">${cb("administrator", l.administrator)}${cb("notify", l.notify)}${cb("primaryContact", l.primaryContact)}<input type="submit" name="_action_updateContactRole" value="Update"></form>`));
     }
 
+    // taxonomy hints and range (views/shared/editTaxonomyHints.gsp, taxonomicRange.gsp -> ProviderGroupController)
+    const taxEdit = path.match(/^\/(\w+)\/edit\/(\w+\d+)$/);
+    if (taxEdit && url.searchParams.get("page") === "/shared/editTaxonomyHints") {
+      const th = JSON.parse(String(state.entities.get(taxEdit[2]!)?.["taxonomyHints"] ?? "{}"));
+      const cov: Array<Record<string, string>> = th.coverage ?? [];
+      const rows = [...cov.map((o, i) => { const [rank, name] = Object.entries(o)[0]!; return `<input type="text" name="rank_${i}" value="${rank}"><input type="text" name="name_${i}" value="${name}">`; }), ...[0, 1, 2].map((d) => { const i = cov.length + d; return `<input type="text" name="rank_${i}" value=""><input type="text" name="name_${i}" value="">`; })].join("");
+      return send(res, 200, page("hints", `<form method="post" name="baseForm" action="/${taxEdit[1]}/base"><input type="hidden" name="id" value="${taxEdit[2]}">${rows}<input type="submit" name="_action_updateTaxonomyHints" value="Update"></form>`));
+    }
+    if (taxEdit && url.searchParams.get("page") === "/shared/taxonomicRange") {
+      const th = JSON.parse(String(state.entities.get(taxEdit[2]!)?.["taxonomyHints"] ?? "{}"));
+      return send(res, 200, page("range", `<form method="post" name="baseForm" action="/${taxEdit[1]}/base"><input type="hidden" name="id" value="${taxEdit[2]}"><input type="text" name="range" value="${(th.range ?? []).join(",")}"><input type="submit" name="_action_updateTaxonomicRange" value="Update"></form>`));
+    }
+    if (taxEdit && url.searchParams.get("page") === "/shared/images") {
+      const target = url.searchParams.get("target") === "logoRef" ? "logoRef" : "imageRef";
+      const e = state.entities.get(taxEdit[2]!)!;
+      const img = e[target] ? JSON.parse(e[target]) : {};
+      return send(res, 200, page("images", `<form method="post" name="imageForm" action="/${taxEdit[1]}/image" enctype="multipart/form-data"><input type="hidden" name="id" value="${taxEdit[2]}"><input type="hidden" name="target" value="${target}"><input type="file" name="${target === "logoRef" ? "logoFile" : "imageFile"}"><input type="text" name="${target}.caption" value="${img.caption ?? ""}"><input type="text" name="${target}.attribution" value="${img.attribution ?? ""}"><input type="text" name="${target}.copyright" value="${img.copyright ?? ""}"><input type="submit" name="_action_updateImages" value="Update"><input type="submit" name="_action_removeImage" value="Remove"><input type="submit" name="_action_cancel" value="Cancel"></form>`));
+    }
+    const imagePost = path.match(/^\/(\w+)\/image$/);
+    if (imagePost && req.method === "POST") {
+      const fd = await new Request(base + path, { method: "POST", headers: { "content-type": String(req.headers["content-type"]) }, body: rawBuf }).formData();
+      const e = state.entities.get(String(fd.get("id")))!;
+      const target = String(fd.get("target")) === "logoRef" ? "logoRef" : "imageRef";
+      if (fd.has("_action_removeImage")) {
+        delete e[target];
+      } else {
+        const file = fd.get(target === "logoRef" ? "logoFile" : "imageFile") as File | null;
+        const prev = e[target] ? JSON.parse(e[target]) : {};
+        const img: Record<string, unknown> = { ...prev };
+        if (file && file.size) {
+          if (file.size >= 200000) return send(res, 200, page("images", `<ul class="errors"><li>The image you selected is too large</li></ul>`));
+          img["filename"] = file.name.replace(/[^ -ÿ]/g, "_"); // collectory's only sanitising (the #272 bug)
+        }
+        for (const k of ["caption", "attribution", "copyright"]) if (fd.has(`${target}.${k}`)) img[k] = fd.get(`${target}.${k}`) || null;
+        if (Object.keys(img).length) e[target] = JSON.stringify(img);
+      }
+      return redirect(res, `/${imagePost[1]}/show/${e["uid"]}`);
+    }
+
     const hubEdit = path.match(/^\/dataHub\/edit\/(dh\d+)$/);
     if (hubEdit && url.searchParams.get("page") === "/dataHub/members") {
       const h = state.entities.get(hubEdit[1]!)!;
@@ -479,14 +518,30 @@ export async function startFakeCollectory(opts: FakeOptions = {}) {
       const list = ((e["consumers"] as string[]) ?? []).filter((u) => u.startsWith(source)).join(",");
       return send(res, 200, page("consumers", `<form method="post" name="baseForm" action="/${cons[1]}/base"><input type="hidden" name="id" value="${e["uid"]}"><input type="hidden" name="version" value="${e["version"]}"><input type="hidden" name="source" value="${source}"><input type="hidden" name="consumers" value="${list}"><input type="submit" name="_action_updateConsumers" value="Update"></form>`));
     }
-    const consPost = path.match(/^\/(dataResource|dataProvider)\/base$/);
-    if (consPost && req.method === "POST") {
+    const basePost = path.match(/^\/(\w+)\/base$/);
+    if (basePost && req.method === "POST") {
       const f = form();
       const e = state.entities.get(f.get("id")!)!;
-      const source = f.get("source")!;
-      const next = (f.get("consumers") ?? "").split(",").filter(Boolean);
-      e["consumers"] = [...((e["consumers"] as string[]) ?? []).filter((u) => !u.startsWith(source)), ...next];
-      return redirect(res, `/${consPost[1]}/show/${e["uid"]}`);
+      if (f.has("_action_updateTaxonomyHints")) {
+        const th = JSON.parse(String(e["taxonomyHints"] ?? "{}"));
+        const cov: Array<Record<string, string>> = [];
+        for (const [k, v] of f) { const m = k.match(/^rank_(\d+)$/); if (m && v) { const name = f.get(`name_${m[1]}`); if (name) cov.push({ [v]: name }); } }
+        th.coverage = cov;
+        e["taxonomyHints"] = JSON.stringify(th);
+        return redirect(res, `/${basePost[1]}/show/${e["uid"]}`);
+      }
+      if (f.has("_action_updateTaxonomicRange")) {
+        const th = JSON.parse(String(e["taxonomyHints"] ?? "{}"));
+        th.range = (f.get("range") ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+        e["taxonomyHints"] = JSON.stringify(th);
+        return redirect(res, `/${basePost[1]}/show/${e["uid"]}`);
+      }
+      if ((basePost[1] === "dataResource" || basePost[1] === "dataProvider") && f.has("consumers")) {
+        const source = f.get("source")!;
+        const next = (f.get("consumers") ?? "").split(",").filter(Boolean);
+        e["consumers"] = [...((e["consumers"] as string[]) ?? []).filter((u) => !u.startsWith(source)), ...next];
+      }
+      return redirect(res, `/${basePost[1]}/show/${e["uid"]}`);
     }
     const iptUi = path === "/dataProvider/iptScan";
     if (iptUi) return send(res, 200, iptScan(url.searchParams.get("uid")!, url.searchParams.get("create") === "true", url.searchParams.get("key") ?? "catalogNumber"));
