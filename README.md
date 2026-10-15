@@ -15,7 +15,8 @@ unlink), and only does it after you say yes. Afterwards it reads the result back
 
 Much of this work is easy to get subtly wrong by hand: a code mapping that silently breaks another one, a data resource
 without unique key terms that duplicates every record on reload, an IPT scan that overwrites metadata. The assistant
-follows the Living Atlases wiki procedures step by step and checks those traps for you.
+follows the procedures of the [Living Atlases documentation wiki][wiki] step by step ([Data mappings][wiki-mappings],
+[Data Hub][wiki-hub], [Upload data][wiki-upload]) and checks those traps for you.
 
 It talks to collectory over HTTP, like a person or a script would, and changes nothing in collectory itself. It works
 like its siblings [spatial-mcp](https://github.com/living-atlases/spatial-mcp) and
@@ -23,26 +24,26 @@ like its siblings [spatial-mcp](https://github.com/living-atlases/spatial-mcp) a
 
 ## What you can do with it
 
-- **Map institution and collection codes to collections** (the wiki's *Data mappings* procedure): add or remove codes
-  without losing the existing ones, with a check against every other mapping (duplicates break lookups) and a lookup
-  afterwards to prove records will resolve.
+- **Map institution and collection codes to collections** (the wiki's [Data mappings][wiki-mappings] procedure): add or
+  remove codes without losing the existing ones, with a check against every other mapping (duplicates break lookups) and
+  a lookup afterwards to prove records will resolve.
 - **Check the data mappings of a resource**, following the wiki page step by step: which institutionCode/collectionCode
   pairs its records carry, whether each resolves to a collection, is missing a mapping or only needs a reprocess,
   records without collectionCode (and the default value that fixes it), and its record consumers. With the portal's
   index it also lists the resources whose records have codes that resolved to no collection.
-- **Maintain data hubs**: add or remove data resources, collections and institutions, and get the list of data
-  resources to reprocess and reindex so the hub shows them.
+- **Maintain [data hubs][wiki-hub]**: add or remove data resources, collections and institutions, and get the list of
+  data resources to reprocess and reindex so the hub shows them.
 - **Edit connection parameters safely**: change the protocol, URL, unique key terms or the incremental flag without
   losing the rest, and refuse saves that would leave a records resource without unique key terms (reloads would then
   duplicate every record).
 - **Sync with an IPT**: see what a scan would change *before* running it (metadata that would be overwritten, new
   datasets, datasets whose URL does not match and would be duplicated), then scan.
-- **Upload a data file** (local server only) to a data resource keeping its connection parameters (incremental, unique
-  key terms, CSV options), with a preview of the metadata the archive's EML overwrites or clears and of the contacts
-  collectory would unlink, which it refuses unless you say so (or re-links them after a CSV upload).
+- **[Upload a data file][wiki-upload]** (local server only) to a data resource keeping its connection parameters
+  (incremental, unique key terms, CSV options), with a preview of the metadata the archive's EML overwrites or clears
+  and of the contacts collectory would unlink, which it refuses unless you say so (or re-links them after a CSV upload).
 - **GBIF**: see which resources are older than their GBIF dataset and reload them; search the datasets of a country to
-  repatriate and load the ones you choose; register or update entities in the GBIF registry; import GBIF
-  organisations as data providers; check the GBIF sharing summary.
+  repatriate ([how][wiki-repatriate]) and load the ones you choose; register or update entities in the GBIF registry;
+  import GBIF organisations as data providers; check the GBIF sharing summary.
 - **Everyday edits**: create institutions, collections, providers and resources, change fields (with a preview of each
   change), add contacts and change their role or flags or unlink them (unpublished contacts too, with a login), set
   an entity's taxonomic coverage and range, upload its image or logo (local server), check what refers to an entity
@@ -164,3 +165,9 @@ an IPT).
 ## More
 
 [DEVELOPMENT.md](DEVELOPMENT.md): how it works, tool reference, findings about collectory, tests. License: MPL-2.0.
+
+[wiki]: https://github.com/AtlasOfLivingAustralia/documentation/wiki
+[wiki-mappings]: https://github.com/AtlasOfLivingAustralia/documentation/wiki/Data-mappings
+[wiki-hub]: https://github.com/AtlasOfLivingAustralia/documentation/wiki/Data-Hub
+[wiki-upload]: https://github.com/AtlasOfLivingAustralia/documentation/wiki/Upload-data
+[wiki-repatriate]: https://github.com/AtlasOfLivingAustralia/documentation/wiki/Other-ways-to-add-data-resource
