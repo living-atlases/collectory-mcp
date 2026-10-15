@@ -1,14 +1,25 @@
 # collectory-mcp
 
-> **Proof of concept.** Try it on a test portal first.
+> **Experimental proof of concept.** This is not production software. Try it on a test portal first (for example the
+> LA demo), never directly on production.
 
-An [MCP](https://modelcontextprotocol.io) server that lets an assistant (Claude, or any MCP client) do the routine,
-fiddly administration of a Living Atlas **collectory**: the registry of institutions, collections, data providers,
-data resources and data hubs. It talks to collectory over HTTP, like a person or a script would, and changes nothing in
-collectory itself.
+collectory-mcp lets you look after the **collectory** of a Living Atlas (the registry of its institutions, collections,
+data providers, data resources and data hubs) by talking to an AI assistant (Claude, or any
+[MCP](https://modelcontextprotocol.io) client) instead of clicking through the collectory admin pages. It is aimed at
+the people who run a portal or curate its registry.
 
-It works like its siblings [spatial-mcp](https://github.com/living-atlases/spatial-mcp) and
-[ipt-mcp](https://github.com/vjrj/ipt-mcp): every change is previewed first and only made after you agree.
+You ask in plain language, for example *"records with institutionCode MNCN and collectionCode ENT should go to the
+Entomology collection"*. The assistant looks at what is there now, shows you what it is going to change and what could
+go wrong (a code already mapped to another collection, a reload that would duplicate records, contacts an upload would
+unlink), and only does it after you say yes. Afterwards it reads the result back to check it stuck.
+
+Much of this work is easy to get subtly wrong by hand: a code mapping that silently breaks another one, a data resource
+without unique key terms that duplicates every record on reload, an IPT scan that overwrites metadata. The assistant
+follows the Living Atlases wiki procedures step by step and checks those traps for you.
+
+It talks to collectory over HTTP, like a person or a script would, and changes nothing in collectory itself. It works
+like its siblings [spatial-mcp](https://github.com/living-atlases/spatial-mcp) and
+[ipt-mcp](https://github.com/vjrj/ipt-mcp).
 
 ## What you can do with it
 
@@ -66,7 +77,11 @@ It works like its siblings [spatial-mcp](https://github.com/living-atlases/spati
 
 ## Install
 
+You need [Node.js 20 or newer](https://nodejs.org) and [git](https://git-scm.com/downloads).
+
 ```bash
+git clone https://github.com/living-atlases/collectory-mcp.git
+cd collectory-mcp
 npm install && npm run build
 ```
 
