@@ -106,7 +106,7 @@ export function createServer(deps: ServerDeps): McpServer {
     }),
   );
 
-  tool("collectory_list", "read", "List entities of a type (uid, name), optionally filtered by any property, e.g. {resourceType: 'records'} or {status: 'dataAvailable'}", { entity, filters: z.record(z.string()).optional() }, async (a) => {
+  tool("collectory_list", "read", "List entities of a type (uid, name), optionally filtered by any property, e.g. {resourceType: 'records'} or {status: 'dataAvailable'}", { entity, filters: z.record(z.string(), z.string()).optional() }, async (a) => {
     const l = await client.list(a.entity, a.filters ?? {});
     return { count: l.length, items: l.map(({ uid, name }) => ({ uid, name })) };
   });
@@ -171,7 +171,7 @@ export function createServer(deps: ServerDeps): McpServer {
         file: z.string().describe("Path of the file on this machine"),
         protocol: z.string().optional().describe("DwCA or DwC (CSV); default: the resource's current one"),
         termsForUniqueKey: z.array(z.string().min(1)).optional(),
-        set: z.record(z.union([z.string(), z.boolean()])).optional().describe("Other parameters of the protocol, e.g. {incremental: true}"),
+        set: z.record(z.string(), z.union([z.string(), z.boolean()])).optional().describe("Other parameters of the protocol, e.g. {incremental: true}"),
         allowKeyChange: z.boolean().optional(),
         allowMissingKeyTerms: z.boolean().optional(),
         contacts: z.enum(["accept", "restore"]).optional().describe("accept: let collectory unlink the contacts it would; restore: re-create and re-link them after an upload without EML"),
@@ -237,7 +237,7 @@ export function createServer(deps: ServerDeps): McpServer {
     "collectory_save_entity",
     "write",
     "Create an entity (give entity) or change fields of an existing one (give uid). Only the fields given change. The preview lists each field change and refuses fields the web service ignores, values collectory rejects (lengths, URLs, status lists) and recordsMapping (use collectory_set_code_mapping)",
-    { uid: uid().optional(), entity: entity.optional().describe("Type to create when no uid is given"), fields: z.record(z.unknown()).describe('e.g. {"name": "…", "websiteUrl": "https://…", "dataProvider": {"uid": "dp2"}}; null clears a field'), dryRun, confirm },
+    { uid: uid().optional(), entity: entity.optional().describe("Type to create when no uid is given"), fields: z.record(z.string(), z.unknown()).describe('e.g. {"name": "…", "websiteUrl": "https://…", "dataProvider": {"uid": "dp2"}}; null clears a field'), dryRun, confirm },
     async (a) => {
       if (mustConfirm(a)) return { dryRun: true, ...(await wf.previewEntity({ uid: a.uid, entity: a.entity }, a.fields)) };
       return wf.saveEntity({ uid: a.uid, entity: a.entity }, a.fields);
@@ -292,7 +292,7 @@ export function createServer(deps: ServerDeps): McpServer {
     "collectory_set_connection_parameters",
     "write",
     "Change a data resource's connection parameters (protocol, url, termsForUniqueKey, incremental, strip, csv settings…) without losing the rest: merges with the current value, refuses when collectory hides the url from these credentials, and checks the unique key terms",
-    { uid: uid("dr"), set: z.record(z.unknown()).optional().describe('Keys to set, e.g. {"termsForUniqueKey": ["occurrenceID"], "incremental": false}'), unset: z.array(z.string()).optional(), replace: z.record(z.unknown()).optional().describe("Replace the whole object instead of merging"), acceptProblems: z.boolean().default(false), dryRun, confirm },
+    { uid: uid("dr"), set: z.record(z.string(), z.unknown()).optional().describe('Keys to set, e.g. {"termsForUniqueKey": ["occurrenceID"], "incremental": false}'), unset: z.array(z.string()).optional(), replace: z.record(z.string(), z.unknown()).optional().describe("Replace the whole object instead of merging"), acceptProblems: z.boolean().default(false), dryRun, confirm },
     async (a) => {
       const o = { set: a.set, unset: a.unset, replace: a.replace };
       if (mustConfirm(a)) return { dryRun: true, ...(await wf.planConnectionParameters(a.uid, o)) };
@@ -452,7 +452,7 @@ export function createServer(deps: ServerDeps): McpServer {
 
   tool("collectory_gbif_organizations", "read", "GBIF organisations of a country that can be imported as data providers", { country: z.string().regex(/^[A-Z]{2}$/) }, async (a) => wf.gbifOrganizations(a.country));
 
-  tool("collectory_gbif_import_organization", "write", "Create a data provider from a GBIF organisation", { organizationKey: z.string().uuid(), confirm }, async (a) => {
+  tool("collectory_gbif_import_organization", "write", "Create a data provider from a GBIF organisation", { organizationKey: z.guid(), confirm }, async (a) => {
     const ask = confirmOnly(a, `create a data provider from GBIF organisation ${a.organizationKey}`);
     return ask ?? wf.gbifImportOrganization(a.organizationKey);
   });

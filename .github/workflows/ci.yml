@@ -21,7 +21,20 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      - run: npm audit --audit-level=high
+
+  audit:
+    # New advisories land against an unchanged lockfile, so the nightly run only warns (Dependabot opens the fix);
+    # pushes and pull requests still fail on them.
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ github.event_name == 'schedule' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm audit --audit-level=high || { echo "::warning::npm audit found high-severity advisories"; exit 1; }
 
   integration:
     # A disposable collectory (official WAR) + MySQL + a fake OIDC issuer whose JWTs collectory accepts:

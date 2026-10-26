@@ -277,7 +277,7 @@ roles), and its authorize/token/userinfo endpoints give the browser-like login t
 
 ### CI
 
-`.github/workflows/ci.yml`: unit tests on Node 20/22, build, `npm audit`; the integration suite against collectory
+`.github/workflows/ci.yml`: unit tests on Node 20/22 and build; `npm audit` in its own job (only a warning on the nightly run, Dependabot opens the fix); the integration suite against collectory
 6.3.0 and 5.1.1 in the harness; the anonymous suite against the LA demo (nightly too), skipped while it is down.
 
 ## License
