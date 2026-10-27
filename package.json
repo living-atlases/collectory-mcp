@@ -31,6 +31,6 @@
     "typescript": "^5.9.3"
   },
   "optionalDependencies": {
-    "@napi-rs/keyring": "^2.1.0"
+    "@napi-rs/keyring": "^2.1.2"
   }
 }
