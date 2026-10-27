@@ -5,7 +5,7 @@
   "type": "module",
   "license": "MPL-2.0",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "bin": {
     "collectory-mcp": "dist/stdio.js",

@@ -78,7 +78,7 @@ like its siblings [spatial-mcp](https://github.com/living-atlases/spatial-mcp) a
 
 ## Install
 
-You need [Node.js 20 or newer](https://nodejs.org) and [git](https://git-scm.com/downloads).
+You need [Node.js 22 or newer](https://nodejs.org) and [git](https://git-scm.com/downloads).
 
 ```bash
 git clone https://github.com/living-atlases/collectory-mcp.git
