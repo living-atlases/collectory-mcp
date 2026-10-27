@@ -11,6 +11,12 @@ updates:
       minor-and-patch:
         applies-to: version-updates
         update-types: [minor, patch]
+    ignore:
+      # Majors that need a migration, not a bump: TypeScript 7 (native compiler) and Node types newer than engines.node.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
